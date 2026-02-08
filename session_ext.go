@@ -15,7 +15,7 @@ func (s *Session) Clone() *Session {
 
 	now := time.Now()
 	return &Session{
-		ID:       generateID(PrefixSession),
+		ID:       GenerateID(PrefixSession),
 		Messages: msgs,
 		Metadata: SessionMeta{
 			Model:       s.Metadata.Model,

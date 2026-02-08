@@ -29,7 +29,7 @@ type SessionMeta struct {
 func NewSession() *Session {
 	now := time.Now()
 	return &Session{
-		ID:        generateID(PrefixSession),
+		ID:        GenerateID(PrefixSession),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
