@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -460,6 +461,75 @@ func TestWithPermissionFunc_StoresFunc(t *testing.T) {
 	}
 	opts := resolveOptions([]AgentOption{WithPermissionFunc(fn)})
 	assert.NotNil(t, opts.permissionFunc)
+}
+
+// --- Close and AddCleanup ---
+
+func TestAgent_Close_NoCleanups(t *testing.T) {
+	a := NewAgent()
+	err := a.Close()
+	assert.NoError(t, err)
+}
+
+func TestAgent_Close_RunsCleanups(t *testing.T) {
+	var calls []string
+	a := NewAgent(WithOnInit(func(a *Agent) {
+		a.AddCleanup(func() error {
+			calls = append(calls, "cleanup1")
+			return nil
+		})
+		a.AddCleanup(func() error {
+			calls = append(calls, "cleanup2")
+			return nil
+		})
+	}))
+
+	err := a.Close()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"cleanup1", "cleanup2"}, calls)
+}
+
+func TestAgent_Close_CollectsErrors(t *testing.T) {
+	a := NewAgent(WithOnInit(func(a *Agent) {
+		a.AddCleanup(func() error { return fmt.Errorf("err1") })
+		a.AddCleanup(func() error { return nil }) // success in between
+		a.AddCleanup(func() error { return fmt.Errorf("err2") })
+	}))
+
+	err := a.Close()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "err1")
+	assert.Contains(t, err.Error(), "err2")
+}
+
+func TestAgent_Close_Idempotent(t *testing.T) {
+	callCount := 0
+	a := NewAgent(WithOnInit(func(a *Agent) {
+		a.AddCleanup(func() error {
+			callCount++
+			return nil
+		})
+	}))
+
+	// First close runs cleanups.
+	require.NoError(t, a.Close())
+	assert.Equal(t, 1, callCount)
+
+	// Second close is idempotent — cleanups NOT run again.
+	require.NoError(t, a.Close())
+	assert.Equal(t, 1, callCount)
+}
+
+func TestAgent_AddCleanup_FromOnInit(t *testing.T) {
+	var cleaned bool
+	a := NewAgent(WithOnInit(func(a *Agent) {
+		a.AddCleanup(func() error {
+			cleaned = true
+			return nil
+		})
+	}))
+	require.NoError(t, a.Close())
+	assert.True(t, cleaned)
 }
 
 // --- Test helpers ---

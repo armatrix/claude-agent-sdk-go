@@ -32,12 +32,12 @@ var _ agent.Tool[ReadInput] = (*ReadTool)(nil)
 func (t *ReadTool) Name() string        { return "Read" }
 func (t *ReadTool) Description() string  { return "Read a file from the local filesystem" }
 
-func (t *ReadTool) Execute(_ context.Context, input ReadInput) (*agent.ToolResult, error) {
+func (t *ReadTool) Execute(ctx context.Context, input ReadInput) (*agent.ToolResult, error) {
 	if input.FilePath == "" {
 		return agent.ErrorResult("file_path is required"), nil
 	}
 
-	f, err := os.Open(input.FilePath)
+	f, err := os.Open(resolvePath(ctx, input.FilePath))
 	if err != nil {
 		return agent.ErrorResult(fmt.Sprintf("failed to open file: %s", err.Error())), nil
 	}

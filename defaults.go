@@ -30,6 +30,14 @@ const (
 	// DefaultMaxTurns is the default max turns (0 = unlimited).
 	DefaultMaxTurns = 0
 
+	// DefaultMaxThinkingTokens is the default thinking token budget (0 = disabled).
+	DefaultMaxThinkingTokens int64 = 0
+
 	// DefaultStreamBufferSize is the default channel buffer size for streaming events.
 	DefaultStreamBufferSize = 64
+
+	// DefaultToolSearchThreshold is the ratio of tool schema tokens to context window
+	// above which the ToolSearch meta-tool replaces the full tool list.
+	// 0.1 means 10% of the context window.
+	DefaultToolSearchThreshold = 0.1
 )

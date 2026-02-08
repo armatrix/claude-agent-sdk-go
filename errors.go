@@ -8,4 +8,6 @@ var (
 	ErrMaxTurns        = errors.New("agent: max turns reached")
 	ErrContextOverflow = errors.New("agent: context window overflow")
 	ErrNoSessionStore  = errors.New("agent: no session store configured")
+	ErrStoreNotListable = errors.New("agent: session store does not support listing")
+	ErrNoSessions      = errors.New("agent: no sessions found")
 )

@@ -23,19 +23,26 @@ var _ agent.Tool[WriteInput] = (*WriteTool)(nil)
 func (t *WriteTool) Name() string        { return "Write" }
 func (t *WriteTool) Description() string  { return "Write a file to the local filesystem" }
 
-func (t *WriteTool) Execute(_ context.Context, input WriteInput) (*agent.ToolResult, error) {
+func (t *WriteTool) Execute(ctx context.Context, input WriteInput) (*agent.ToolResult, error) {
 	if input.FilePath == "" {
 		return agent.ErrorResult("file_path is required"), nil
 	}
 
-	dir := filepath.Dir(input.FilePath)
+	resolved := resolvePath(ctx, input.FilePath)
+
+	// Sandbox: check allowed directories
+	if err := checkSandboxPath(ctx, resolved); err != nil {
+		return agent.ErrorResult(err.Error()), nil
+	}
+
+	dir := filepath.Dir(resolved)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return agent.ErrorResult(fmt.Sprintf("failed to create directory: %s", err.Error())), nil
 	}
 
-	if err := os.WriteFile(input.FilePath, []byte(input.Content), 0644); err != nil {
+	if err := os.WriteFile(resolved, []byte(input.Content), 0644); err != nil {
 		return agent.ErrorResult(fmt.Sprintf("failed to write file: %s", err.Error())), nil
 	}
 
-	return agent.TextResult(fmt.Sprintf("Successfully wrote to %s", input.FilePath)), nil
+	return agent.TextResult(fmt.Sprintf("Successfully wrote to %s", resolved)), nil
 }

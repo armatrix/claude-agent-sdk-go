@@ -5,6 +5,8 @@ import (
 	"sync"
 
 	"github.com/anthropics/anthropic-sdk-go"
+
+	"github.com/armatrix/claude-agent-sdk-go/permission"
 )
 
 // Client is a stateful session container that wraps an Agent.
@@ -86,6 +88,64 @@ func (c *Client) SetModel(model anthropic.Model) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.agent.opts.model = model
+}
+
+// SetMaxThinkingTokens updates the thinking token budget for subsequent queries.
+// Set to 0 to disable thinking.
+func (c *Client) SetMaxThinkingTokens(n int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.agent.opts.maxThinkingTokens = n
+}
+
+// InterruptAndContinue cancels the current Query but preserves the session.
+// The next call to Query will continue the conversation from where it left off.
+// This is semantically equivalent to Interrupt — included for API parity with
+// the official TS/Python SDKs.
+func (c *Client) InterruptAndContinue() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cancel != nil {
+		c.cancel()
+		c.cancel = nil
+	}
+}
+
+// SetPermissionMode updates the permission mode for subsequent queries.
+func (c *Client) SetPermissionMode(mode permission.Mode) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.agent.opts.permissionMode = mode
+}
+
+// ContinueLatest loads the most recently updated session from the store.
+// Requires a SessionStore that implements SessionLister.
+func (c *Client) ContinueLatest(ctx context.Context) error {
+	if c.store == nil {
+		return errNoStore
+	}
+	lister, ok := c.store.(SessionLister)
+	if !ok {
+		return ErrStoreNotListable
+	}
+	sessions, err := lister.List(ctx)
+	if err != nil {
+		return err
+	}
+	if len(sessions) == 0 {
+		return ErrNoSessions
+	}
+	// Find most recently updated
+	latest := sessions[0]
+	for _, s := range sessions[1:] {
+		if s.UpdatedAt.After(latest.UpdatedAt) {
+			latest = s
+		}
+	}
+	c.mu.Lock()
+	c.session = latest
+	c.mu.Unlock()
+	return nil
 }
 
 // Session returns the client's current session.

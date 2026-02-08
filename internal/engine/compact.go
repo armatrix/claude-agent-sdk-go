@@ -32,9 +32,10 @@ type CompactConfig struct {
 // when using the Beta API. It converts BetaMessage stream events back to
 // standard MessageStreamEventUnion events so the loop stays unchanged.
 type compactAwareStreamer struct {
-	betaSvc  *anthropic.BetaMessageService
-	stdSvc   *anthropic.MessageService
-	compact  CompactConfig
+	betaSvc   *anthropic.BetaMessageService
+	stdSvc    *anthropic.MessageService
+	compact   CompactConfig
+	userBetas []string
 }
 
 // NewCompactStreamer creates a MessageStreamer that handles compaction via the Beta API.
@@ -48,13 +49,24 @@ func NewCompactStreamer(client *anthropic.Client, compact CompactConfig) Message
 	}
 }
 
+// NewCompactStreamerWithBetas creates a compact-aware MessageStreamer that also
+// merges user-provided beta flags with the compaction beta.
+func NewCompactStreamerWithBetas(client *anthropic.Client, compact CompactConfig, betas []string) MessageStreamer {
+	return &compactAwareStreamer{
+		betaSvc:   &client.Beta.Messages,
+		stdSvc:    &client.Messages,
+		compact:   compact,
+		userBetas: betas,
+	}
+}
+
 func (s *compactAwareStreamer) NewStreaming(ctx context.Context, params anthropic.MessageNewParams) *ssestream.Stream[anthropic.MessageStreamEventUnion] {
 	if s.compact.Strategy != CompactServer {
 		return s.stdSvc.NewStreaming(ctx, params)
 	}
 
 	// Convert standard params to beta params with context_management
-	betaParams := convertToBetaParams(params, s.compact)
+	betaParams := convertToBetaParams(params, s.compact, s.userBetas)
 
 	// Call beta API
 	betaStream := s.betaSvc.NewStreaming(ctx, betaParams)
@@ -63,9 +75,32 @@ func (s *compactAwareStreamer) NewStreaming(ctx context.Context, params anthropi
 	return wrapBetaStream(betaStream)
 }
 
+// betaOnlyStreamer uses the Beta API for requests that need beta feature flags
+// but do not use compaction.
+type betaOnlyStreamer struct {
+	betaSvc *anthropic.BetaMessageService
+	betas   []string
+}
+
+// NewBetaStreamer creates a MessageStreamer that routes all requests through
+// the Beta API with the given beta flags. Use this when betas are needed
+// but compaction is disabled.
+func NewBetaStreamer(client *anthropic.Client, betas []string) MessageStreamer {
+	return &betaOnlyStreamer{
+		betaSvc: &client.Beta.Messages,
+		betas:   betas,
+	}
+}
+
+func (s *betaOnlyStreamer) NewStreaming(ctx context.Context, params anthropic.MessageNewParams) *ssestream.Stream[anthropic.MessageStreamEventUnion] {
+	betaParams := convertToBetaParamsNoCompact(params, s.betas)
+	betaStream := s.betaSvc.NewStreaming(ctx, betaParams)
+	return wrapBetaStream(betaStream)
+}
+
 // convertToBetaParams converts standard MessageNewParams to BetaMessageNewParams
-// with context_management configuration added.
-func convertToBetaParams(params anthropic.MessageNewParams, compact CompactConfig) anthropic.BetaMessageNewParams {
+// with context_management configuration added and optional user betas merged.
+func convertToBetaParams(params anthropic.MessageNewParams, compact CompactConfig, userBetas []string) anthropic.BetaMessageNewParams {
 	// Convert messages
 	betaMessages := make([]anthropic.BetaMessageParam, len(params.Messages))
 	for i, msg := range params.Messages {
@@ -93,11 +128,14 @@ func convertToBetaParams(params anthropic.MessageNewParams, compact CompactConfi
 		compactEdit.Instructions = anthropic.String(compact.Instructions)
 	}
 
+	// Merge compact beta with user-provided betas
+	betas := mergeBetas([]string{"compact-2026-01-12"}, userBetas)
+
 	betaParams := anthropic.BetaMessageNewParams{
 		Model:     params.Model,
 		MaxTokens: params.MaxTokens,
 		Messages:  betaMessages,
-		Betas:     []anthropic.AnthropicBeta{anthropic.AnthropicBeta("compact-2026-01-12")},
+		Betas:     betas,
 		ContextManagement: anthropic.BetaContextManagementConfigParam{
 			Edits: []anthropic.BetaContextManagementConfigEditUnionParam{
 				{OfCompact20260112: &compactEdit},
@@ -120,7 +158,74 @@ func convertToBetaParams(params anthropic.MessageNewParams, compact CompactConfi
 		betaParams.System = betaSystem
 	}
 
+	// Propagate thinking config if set
+	if params.Thinking.OfEnabled != nil {
+		betaParams.Thinking = anthropic.BetaThinkingConfigParamOfEnabled(params.Thinking.OfEnabled.BudgetTokens)
+	}
+
 	return betaParams
+}
+
+// convertToBetaParamsNoCompact converts standard MessageNewParams to BetaMessageNewParams
+// without context management. Used when only user betas are needed.
+func convertToBetaParamsNoCompact(params anthropic.MessageNewParams, userBetas []string) anthropic.BetaMessageNewParams {
+	betaMessages := make([]anthropic.BetaMessageParam, len(params.Messages))
+	for i, msg := range params.Messages {
+		betaMessages[i] = convertMessageParam(msg)
+	}
+
+	betaTools := make([]anthropic.BetaToolUnionParam, len(params.Tools))
+	for i, tool := range params.Tools {
+		betaTools[i] = convertToolParam(tool)
+	}
+
+	betas := mergeBetas(nil, userBetas)
+
+	betaParams := anthropic.BetaMessageNewParams{
+		Model:     params.Model,
+		MaxTokens: params.MaxTokens,
+		Messages:  betaMessages,
+		Betas:     betas,
+	}
+
+	if len(betaTools) > 0 {
+		betaParams.Tools = betaTools
+	}
+
+	if len(params.System) > 0 {
+		betaSystem := make([]anthropic.BetaTextBlockParam, len(params.System))
+		for i, s := range params.System {
+			betaSystem[i] = anthropic.BetaTextBlockParam{
+				Text: s.Text,
+			}
+		}
+		betaParams.System = betaSystem
+	}
+
+	if params.Thinking.OfEnabled != nil {
+		betaParams.Thinking = anthropic.BetaThinkingConfigParamOfEnabled(params.Thinking.OfEnabled.BudgetTokens)
+	}
+
+	return betaParams
+}
+
+// mergeBetas combines internal and user betas, deduplicating entries.
+func mergeBetas(internal []string, user []string) []anthropic.AnthropicBeta {
+	seen := make(map[string]bool, len(internal)+len(user))
+	var result []anthropic.AnthropicBeta
+	for _, b := range internal {
+		if !seen[b] {
+			seen[b] = true
+			result = append(result, anthropic.AnthropicBeta(b))
+		}
+	}
+	for _, b := range user {
+		if !seen[b] {
+			seen[b] = true
+			result = append(result, anthropic.AnthropicBeta(b))
+		}
+	}
+	return result
 }
 
 // convertMessageParam converts a standard MessageParam to a BetaMessageParam.

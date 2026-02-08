@@ -697,6 +697,35 @@ type mockHookRunner struct {
 	postToolCalls  []string
 	postFailCalls  []string
 	stopCalls      int
+
+	sessionStartCalls int
+	sessionEndCalls   int
+	preCompactCalls   []string // strategy
+	postCompactCalls  []string // strategy
+	preAPICalls       []struct {
+		Model        string
+		MessageCount int
+	}
+	postAPICalls []struct {
+		Model        string
+		InputTokens  int64
+		OutputTokens int64
+	}
+	toolResultCalls []struct {
+		ToolName string
+		Output   string
+		IsError  bool
+	}
+	notificationCalls []struct {
+		Type    string
+		Payload json.RawMessage
+	}
+	permissionRequestResult *HookPreToolResult
+	permissionRequestErr    error
+	permissionRequestCalls  []struct {
+		ToolName string
+		Input    json.RawMessage
+	}
 }
 
 func (m *mockHookRunner) RunPreToolUse(ctx context.Context, sessionID, toolName string, input json.RawMessage) (*HookPreToolResult, error) {
@@ -716,6 +745,68 @@ func (m *mockHookRunner) RunPostToolFailure(ctx context.Context, sessionID, tool
 func (m *mockHookRunner) RunStop(ctx context.Context, sessionID string) error {
 	m.stopCalls++
 	return nil
+}
+
+func (m *mockHookRunner) RunSessionStart(ctx context.Context, sessionID string) error {
+	m.sessionStartCalls++
+	return nil
+}
+
+func (m *mockHookRunner) RunSessionEnd(ctx context.Context, sessionID string) error {
+	m.sessionEndCalls++
+	return nil
+}
+
+func (m *mockHookRunner) RunPreCompact(ctx context.Context, sessionID, strategy string) error {
+	m.preCompactCalls = append(m.preCompactCalls, strategy)
+	return nil
+}
+
+func (m *mockHookRunner) RunPostCompact(ctx context.Context, sessionID, strategy string) error {
+	m.postCompactCalls = append(m.postCompactCalls, strategy)
+	return nil
+}
+
+func (m *mockHookRunner) RunPreAPIRequest(ctx context.Context, sessionID, model string, messageCount int) error {
+	m.preAPICalls = append(m.preAPICalls, struct {
+		Model        string
+		MessageCount int
+	}{model, messageCount})
+	return nil
+}
+
+func (m *mockHookRunner) RunPostAPIRequest(ctx context.Context, sessionID, model string, inputTokens, outputTokens int64) error {
+	m.postAPICalls = append(m.postAPICalls, struct {
+		Model        string
+		InputTokens  int64
+		OutputTokens int64
+	}{model, inputTokens, outputTokens})
+	return nil
+}
+
+func (m *mockHookRunner) RunToolResult(ctx context.Context, sessionID, toolName string, input json.RawMessage, output string, isError bool) error {
+	m.toolResultCalls = append(m.toolResultCalls, struct {
+		ToolName string
+		Output   string
+		IsError  bool
+	}{toolName, output, isError})
+	return nil
+}
+
+func (m *mockHookRunner) RunNotification(ctx context.Context, sessionID, notifType string, payload json.RawMessage) error {
+	m.notificationCalls = append(m.notificationCalls, struct {
+		Type    string
+		Payload json.RawMessage
+	}{notifType, payload})
+	return nil
+}
+
+func (m *mockHookRunner) RunPermissionRequest(ctx context.Context, sessionID, toolName string, input json.RawMessage) (*HookPreToolResult, error) {
+	m.permissionRequestCalls = append(m.permissionRequestCalls, struct {
+		ToolName string
+		Input    json.RawMessage
+	}{toolName, input})
+	return m.permissionRequestResult, m.permissionRequestErr
 }
 
 // mockPermissionChecker implements PermissionChecker for testing.
@@ -1197,4 +1288,373 @@ func TestRunLoop_CompactionStopReason(t *testing.T) {
 	require.Len(t, collector.results, 1)
 	assert.Equal(t, "success", collector.results[0].Subtype)
 	assert.Equal(t, 2, collector.results[0].NumTurns)
+}
+
+func TestRunLoop_SessionStartEndHooks(t *testing.T) {
+	sse := buildSSE(
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
+		textBlockStart(0, ""),
+		textDelta(0, "Hi"),
+		blockStop(0),
+		messageDelta("end_turn", 5),
+		messageStop(),
+	)
+
+	streamer := newMockStreamer(sse)
+	tools := newMockToolExecutor()
+	hooks := &mockHookRunner{}
+	collector := &eventCollector{}
+
+	messages := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock("Hello")),
+	}
+
+	cfg := LoopConfig{
+		Streamer:  streamer,
+		Tools:     tools,
+		Model:     anthropic.ModelClaudeOpus4_6,
+		MaxTokens: 1024,
+		Messages:  &messages,
+		SessionID: "test-session",
+		Sink:      collector,
+		Hooks:     hooks,
+	}
+
+	RunLoop(context.Background(), cfg)
+
+	assert.Equal(t, 1, hooks.sessionStartCalls, "SessionStart should fire once")
+	assert.Equal(t, 1, hooks.sessionEndCalls, "SessionEnd should fire once")
+}
+
+func TestRunLoop_SessionEndOnError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	streamer := newMockStreamer()
+	tools := newMockToolExecutor()
+	hooks := &mockHookRunner{}
+	collector := &eventCollector{}
+
+	messages := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock("Hi")),
+	}
+
+	cfg := LoopConfig{
+		Streamer:  streamer,
+		Tools:     tools,
+		Model:     anthropic.ModelClaudeOpus4_6,
+		MaxTokens: 1024,
+		Messages:  &messages,
+		SessionID: "test-session",
+		Sink:      collector,
+		Hooks:     hooks,
+	}
+
+	RunLoop(ctx, cfg)
+
+	assert.Equal(t, 1, hooks.sessionStartCalls, "SessionStart should fire even on cancelled context")
+	assert.Equal(t, 1, hooks.sessionEndCalls, "SessionEnd should fire via defer on error exit")
+}
+
+func TestRunLoop_PrePostAPIRequestHooks(t *testing.T) {
+	// Two-turn conversation: tool use + final response
+	sse1 := buildSSE(
+		messageStart(anthropic.ModelClaudeOpus4_6, 100),
+		toolUseStart(0, "toolu_api", "echo"),
+		inputJSONDelta(0, `{}`),
+		blockStop(0),
+		messageDelta("tool_use", 50),
+		messageStop(),
+	)
+
+	sse2 := buildSSE(
+		messageStart(anthropic.ModelClaudeOpus4_6, 200),
+		textBlockStart(0, ""),
+		textDelta(0, "Done"),
+		blockStop(0),
+		messageDelta("end_turn", 30),
+		messageStop(),
+	)
+
+	streamer := newMockStreamer(sse1, sse2)
+	tools := newMockToolExecutor()
+	tools.Register("echo", func(ctx context.Context, input json.RawMessage) (string, bool, error) {
+		return "ok", false, nil
+	})
+
+	hooks := &mockHookRunner{}
+	collector := &eventCollector{}
+
+	messages := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock("Go")),
+	}
+
+	cfg := LoopConfig{
+		Streamer:  streamer,
+		Tools:     tools,
+		Model:     anthropic.ModelClaudeOpus4_6,
+		MaxTokens: 1024,
+		Messages:  &messages,
+		SessionID: "test-session",
+		Sink:      collector,
+		Hooks:     hooks,
+	}
+
+	RunLoop(context.Background(), cfg)
+
+	// Two API calls → two PreAPIRequest + two PostAPIRequest
+	require.Len(t, hooks.preAPICalls, 2)
+	require.Len(t, hooks.postAPICalls, 2)
+
+	// First call: model string, 1 message (initial user message)
+	assert.Equal(t, string(anthropic.ModelClaudeOpus4_6), hooks.preAPICalls[0].Model)
+	assert.Equal(t, 1, hooks.preAPICalls[0].MessageCount)
+
+	// First PostAPIRequest has correct token counts
+	assert.Equal(t, int64(100), hooks.postAPICalls[0].InputTokens)
+	assert.Equal(t, int64(50), hooks.postAPICalls[0].OutputTokens)
+
+	// Second PostAPIRequest
+	assert.Equal(t, int64(200), hooks.postAPICalls[1].InputTokens)
+	assert.Equal(t, int64(30), hooks.postAPICalls[1].OutputTokens)
+}
+
+func TestRunLoop_CompactionHooks(t *testing.T) {
+	// First API call: compaction stop reason
+	sse1 := buildSSE(
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
+		textBlockStart(0, ""),
+		textDelta(0, "compacting..."),
+		blockStop(0),
+		messageDelta("compaction", 5),
+		messageStop(),
+	)
+
+	// Second API call: normal end_turn
+	sse2 := buildSSE(
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
+		textBlockStart(0, ""),
+		textDelta(0, "Done"),
+		blockStop(0),
+		messageDelta("end_turn", 10),
+		messageStop(),
+	)
+
+	streamer := newMockStreamer(sse1, sse2)
+	tools := newMockToolExecutor()
+	hooks := &mockHookRunner{}
+	collector := &eventCollector{}
+
+	messages := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock("Do something")),
+	}
+
+	cfg := LoopConfig{
+		Streamer:  streamer,
+		Tools:     tools,
+		Model:     anthropic.ModelClaudeOpus4_6,
+		MaxTokens: 1024,
+		Messages:  &messages,
+		SessionID: "test-session",
+		Sink:      collector,
+		Hooks:     hooks,
+	}
+
+	RunLoop(context.Background(), cfg)
+
+	// PreCompact and PostCompact each fired once with "server" strategy
+	require.Len(t, hooks.preCompactCalls, 1)
+	assert.Equal(t, "server", hooks.preCompactCalls[0])
+	require.Len(t, hooks.postCompactCalls, 1)
+	assert.Equal(t, "server", hooks.postCompactCalls[0])
+}
+
+func TestRunLoop_ToolResultHook(t *testing.T) {
+	// Model requests two tools: one succeeds, one fails
+	sse1 := buildSSE(
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
+		toolUseStart(0, "toolu_ok", "good_tool"),
+		inputJSONDelta(0, `{}`),
+		blockStop(0),
+		toolUseStart(1, "toolu_fail", "bad_tool"),
+		inputJSONDelta(1, `{}`),
+		blockStop(1),
+		messageDelta("tool_use", 10),
+		messageStop(),
+	)
+
+	sse2 := buildSSE(
+		messageStart(anthropic.ModelClaudeOpus4_6, 30),
+		textBlockStart(0, ""),
+		textDelta(0, "Done"),
+		blockStop(0),
+		messageDelta("end_turn", 10),
+		messageStop(),
+	)
+
+	streamer := newMockStreamer(sse1, sse2)
+	tools := newMockToolExecutor()
+	tools.Register("good_tool", func(ctx context.Context, input json.RawMessage) (string, bool, error) {
+		return "success output", false, nil
+	})
+	tools.Register("bad_tool", func(ctx context.Context, input json.RawMessage) (string, bool, error) {
+		return "error output", true, nil
+	})
+
+	hooks := &mockHookRunner{}
+	collector := &eventCollector{}
+
+	messages := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock("Use tools")),
+	}
+
+	cfg := LoopConfig{
+		Streamer:  streamer,
+		Tools:     tools,
+		Model:     anthropic.ModelClaudeOpus4_6,
+		MaxTokens: 1024,
+		Messages:  &messages,
+		SessionID: "test-session",
+		Sink:      collector,
+		Hooks:     hooks,
+	}
+
+	RunLoop(context.Background(), cfg)
+
+	// ToolResult fired for both tools
+	require.Len(t, hooks.toolResultCalls, 2)
+
+	assert.Equal(t, "good_tool", hooks.toolResultCalls[0].ToolName)
+	assert.Equal(t, "success output", hooks.toolResultCalls[0].Output)
+	assert.False(t, hooks.toolResultCalls[0].IsError)
+
+	assert.Equal(t, "bad_tool", hooks.toolResultCalls[1].ToolName)
+	assert.Equal(t, "error output", hooks.toolResultCalls[1].Output)
+	assert.True(t, hooks.toolResultCalls[1].IsError)
+}
+
+// --- Phase 3: Thinking and Betas ---
+
+func TestRunLoop_ThinkingTokens_SetsParams(t *testing.T) {
+	sse := buildSSE(
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
+		textBlockStart(0, ""),
+		textDelta(0, "Thought and responded"),
+		blockStop(0),
+		messageDelta("end_turn", 5),
+		messageStop(),
+	)
+
+	inner := newMockStreamer(sse)
+	streamer := &capturingStreamer{inner: inner}
+	tools := newMockToolExecutor()
+	collector := &eventCollector{}
+
+	messages := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock("Think deeply")),
+	}
+
+	cfg := LoopConfig{
+		Streamer:          streamer,
+		Tools:             tools,
+		Model:             anthropic.ModelClaudeOpus4_6,
+		MaxTokens:         1024,
+		MaxThinkingTokens: 10000,
+		Messages:          &messages,
+		SessionID:         "test-session",
+		Sink:              collector,
+	}
+
+	RunLoop(context.Background(), cfg)
+
+	require.Len(t, streamer.params, 1)
+	p := streamer.params[0]
+
+	// Thinking should be enabled
+	require.NotNil(t, p.Thinking.OfEnabled)
+	assert.Equal(t, int64(10000), p.Thinking.OfEnabled.BudgetTokens)
+
+	// MaxTokens should be bumped to at least budget + 16384
+	assert.GreaterOrEqual(t, p.MaxTokens, int64(10000+16384))
+}
+
+func TestRunLoop_ThinkingTokens_Zero_NoThinking(t *testing.T) {
+	sse := buildSSE(
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
+		textBlockStart(0, ""),
+		textDelta(0, "OK"),
+		blockStop(0),
+		messageDelta("end_turn", 5),
+		messageStop(),
+	)
+
+	inner := newMockStreamer(sse)
+	streamer := &capturingStreamer{inner: inner}
+	tools := newMockToolExecutor()
+	collector := &eventCollector{}
+
+	messages := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock("Hi")),
+	}
+
+	cfg := LoopConfig{
+		Streamer:          streamer,
+		Tools:             tools,
+		Model:             anthropic.ModelClaudeOpus4_6,
+		MaxTokens:         4096,
+		MaxThinkingTokens: 0, // disabled
+		Messages:          &messages,
+		SessionID:         "test-session",
+		Sink:              collector,
+	}
+
+	RunLoop(context.Background(), cfg)
+
+	require.Len(t, streamer.params, 1)
+	p := streamer.params[0]
+
+	// Thinking should NOT be set
+	assert.Nil(t, p.Thinking.OfEnabled)
+
+	// MaxTokens should stay as-is
+	assert.Equal(t, int64(4096), p.MaxTokens)
+}
+
+func TestRunLoop_ThinkingTokens_MaxTokensAlreadyLarge(t *testing.T) {
+	sse := buildSSE(
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
+		textBlockStart(0, ""),
+		textDelta(0, "OK"),
+		blockStop(0),
+		messageDelta("end_turn", 5),
+		messageStop(),
+	)
+
+	inner := newMockStreamer(sse)
+	streamer := &capturingStreamer{inner: inner}
+	tools := newMockToolExecutor()
+	collector := &eventCollector{}
+
+	messages := []anthropic.MessageParam{
+		anthropic.NewUserMessage(anthropic.NewTextBlock("Hi")),
+	}
+
+	cfg := LoopConfig{
+		Streamer:          streamer,
+		Tools:             tools,
+		Model:             anthropic.ModelClaudeOpus4_6,
+		MaxTokens:         128000, // already large enough
+		MaxThinkingTokens: 10000,
+		Messages:          &messages,
+		SessionID:         "test-session",
+		Sink:              collector,
+	}
+
+	RunLoop(context.Background(), cfg)
+
+	require.Len(t, streamer.params, 1)
+	p := streamer.params[0]
+
+	// MaxTokens should stay as-is since 128000 >= 10000 + 16384
+	assert.Equal(t, int64(128000), p.MaxTokens)
 }

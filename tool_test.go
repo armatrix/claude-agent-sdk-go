@@ -157,6 +157,68 @@ func TestErrorResult(t *testing.T) {
 	assert.Equal(t, "something failed", *r.Content[0].GetText())
 }
 
+// --- mock tool for search tests ---
+
+type searchInput struct {
+	Query string `json:"query" jsonschema:"required"`
+}
+
+type mockSearchableTool struct {
+	name string
+	desc string
+}
+
+func (t *mockSearchableTool) Name() string        { return t.name }
+func (t *mockSearchableTool) Description() string { return t.desc }
+
+func (t *mockSearchableTool) Execute(_ context.Context, input searchInput) (*ToolResult, error) {
+	return TextResult("ok"), nil
+}
+
+func TestToolRegistry_Search_ByName(t *testing.T) {
+	registry := NewToolRegistry()
+	RegisterTool[searchInput](registry, &mockSearchableTool{name: "ReadFile", desc: "Read a file"})
+	RegisterTool[searchInput](registry, &mockSearchableTool{name: "WriteFile", desc: "Write a file"})
+	RegisterTool[searchInput](registry, &mockSearchableTool{name: "BashExec", desc: "Execute shell command"})
+
+	matches := registry.Search("file")
+	assert.Len(t, matches, 2)
+	assert.Equal(t, "ReadFile", matches[0].Name)
+	assert.Equal(t, "WriteFile", matches[1].Name)
+}
+
+func TestToolRegistry_Search_ByDescription(t *testing.T) {
+	registry := NewToolRegistry()
+	RegisterTool[searchInput](registry, &mockSearchableTool{name: "BashExec", desc: "Execute shell command"})
+	RegisterTool[searchInput](registry, &mockSearchableTool{name: "ReadFile", desc: "Read a file"})
+
+	matches := registry.Search("shell")
+	require.Len(t, matches, 1)
+	assert.Equal(t, "BashExec", matches[0].Name)
+	assert.Equal(t, "Execute shell command", matches[0].Description)
+}
+
+func TestToolRegistry_Search_NoMatch(t *testing.T) {
+	registry := NewToolRegistry()
+	RegisterTool[searchInput](registry, &mockSearchableTool{name: "ReadFile", desc: "Read a file"})
+
+	matches := registry.Search("deploy")
+	assert.Empty(t, matches)
+}
+
+func TestToolRegistry_Search_CaseInsensitive(t *testing.T) {
+	registry := NewToolRegistry()
+	RegisterTool[searchInput](registry, &mockSearchableTool{name: "ReadFile", desc: "Read a file from filesystem"})
+
+	matches := registry.Search("READFILE")
+	require.Len(t, matches, 1)
+	assert.Equal(t, "ReadFile", matches[0].Name)
+
+	matches = registry.Search("FILESYSTEM")
+	require.Len(t, matches, 1)
+	assert.Equal(t, "ReadFile", matches[0].Name)
+}
+
 func TestListForAPISchemaSerializable(t *testing.T) {
 	registry := NewToolRegistry()
 	RegisterTool[readInput](registry, &mockReadTool{})

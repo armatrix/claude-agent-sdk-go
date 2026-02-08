@@ -27,17 +27,21 @@ var _ agent.Tool[GlobInput] = (*GlobTool)(nil)
 func (t *GlobTool) Name() string        { return "Glob" }
 func (t *GlobTool) Description() string  { return "Fast file pattern matching tool" }
 
-func (t *GlobTool) Execute(_ context.Context, input GlobInput) (*agent.ToolResult, error) {
+func (t *GlobTool) Execute(ctx context.Context, input GlobInput) (*agent.ToolResult, error) {
 	if input.Pattern == "" {
 		return agent.ErrorResult("pattern is required"), nil
 	}
 
 	basePath := input.Path
 	if basePath == "" {
-		var err error
-		basePath, err = os.Getwd()
-		if err != nil {
-			return agent.ErrorResult(fmt.Sprintf("failed to get working directory: %s", err.Error())), nil
+		if dir := agent.ContextWorkDir(ctx); dir != "" {
+			basePath = dir
+		} else {
+			var err error
+			basePath, err = os.Getwd()
+			if err != nil {
+				return agent.ErrorResult(fmt.Sprintf("failed to get working directory: %s", err.Error())), nil
+			}
 		}
 	}
 

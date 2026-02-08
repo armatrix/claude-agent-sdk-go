@@ -28,16 +28,42 @@ const (
 	PostAPIRequest     Event = "PostAPIRequest"
 	ToolResult         Event = "ToolResult"
 	Notification       Event = "Notification"
+	UserPromptSubmit   Event = "UserPromptSubmit"
+	SubagentStart      Event = "SubagentStart"
+	SubagentStop       Event = "SubagentStop"
+	PermissionRequest  Event = "PermissionRequest"
 )
 
 // Input is passed to hook functions.
 type Input struct {
 	SessionID  string
 	Event      Event
-	ToolName   string          // Only for tool-related events.
-	ToolInput  json.RawMessage // Only for PreToolUse.
-	ToolOutput string          // Only for PostToolUse.
-	ToolError  error           // Only for PostToolUseFailure.
+	ToolName   string          // Tool-related events.
+	ToolInput  json.RawMessage // PreToolUse, PostToolUse, PostToolUseFailure, ToolResult.
+	ToolOutput string          // PostToolUse, ToolResult.
+	ToolError  error           // PostToolUseFailure, ToolResult.
+
+	// API request hooks
+	Model        string // PreAPIRequest, PostAPIRequest.
+	MessageCount int    // PreAPIRequest (number of messages being sent).
+	InputTokens  int64  // PostAPIRequest.
+	OutputTokens int64  // PostAPIRequest.
+
+	// Compaction hooks
+	CompactStrategy string // PreCompact, PostCompact.
+
+	// Notification hook
+	NotificationType string          // Notification.
+	Payload          json.RawMessage // Notification.
+
+	// UserPromptSubmit hook
+	Prompt string // The user's prompt text.
+
+	// SubagentStart / SubagentStop hooks
+	AgentName string // Name of the sub-agent.
+	RunID     string // Unique run identifier.
+
+	// PermissionRequest hook reuses ToolName + ToolInput fields.
 }
 
 // Result is returned by hook functions. A zero value means "no action".

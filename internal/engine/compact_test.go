@@ -22,7 +22,7 @@ func TestConvertToBetaParams_Basic(t *testing.T) {
 		TriggerTokens: 100000,
 	}
 
-	beta := convertToBetaParams(params, compact)
+	beta := convertToBetaParams(params, compact, nil)
 
 	assert.Equal(t, anthropic.ModelClaudeOpus4_6, beta.Model)
 	assert.Equal(t, int64(4096), beta.MaxTokens)
@@ -56,7 +56,7 @@ func TestConvertToBetaParams_WithPauseAndInstructions(t *testing.T) {
 		Instructions:      "Preserve file paths and variable names",
 	}
 
-	beta := convertToBetaParams(params, compact)
+	beta := convertToBetaParams(params, compact, nil)
 
 	edit := beta.ContextManagement.Edits[0].OfCompact20260112
 	require.NotNil(t, edit)
@@ -84,7 +84,7 @@ func TestConvertToBetaParams_WithTools(t *testing.T) {
 		TriggerTokens: 100000,
 	}
 
-	beta := convertToBetaParams(params, compact)
+	beta := convertToBetaParams(params, compact, nil)
 
 	require.Len(t, beta.Tools, 1)
 	require.NotNil(t, beta.Tools[0].OfTool)
@@ -130,4 +130,137 @@ func TestConvertContentBlockParam_ToolUse(t *testing.T) {
 	require.NotNil(t, beta.OfToolUse)
 	assert.Equal(t, "toolu_456", beta.OfToolUse.ID)
 	assert.Equal(t, "my_tool", beta.OfToolUse.Name)
+}
+
+// --- Beta merging ---
+
+func TestConvertToBetaParams_MergesUserBetas(t *testing.T) {
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.ModelClaudeOpus4_6,
+		MaxTokens: 4096,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("Hello")),
+		},
+	}
+
+	compact := CompactConfig{
+		Strategy:      CompactServer,
+		TriggerTokens: 100000,
+	}
+
+	beta := convertToBetaParams(params, compact, []string{"context-1m-2025-08-07"})
+
+	// Should have both compact and user beta
+	require.Len(t, beta.Betas, 2)
+	assert.Equal(t, anthropic.AnthropicBeta("compact-2026-01-12"), beta.Betas[0])
+	assert.Equal(t, anthropic.AnthropicBeta("context-1m-2025-08-07"), beta.Betas[1])
+}
+
+func TestConvertToBetaParams_DeduplicatesBetas(t *testing.T) {
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.ModelClaudeOpus4_6,
+		MaxTokens: 4096,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("Hello")),
+		},
+	}
+
+	compact := CompactConfig{
+		Strategy:      CompactServer,
+		TriggerTokens: 100000,
+	}
+
+	// User passes the same beta as compact
+	beta := convertToBetaParams(params, compact, []string{"compact-2026-01-12"})
+
+	// Should deduplicate
+	require.Len(t, beta.Betas, 1)
+	assert.Equal(t, anthropic.AnthropicBeta("compact-2026-01-12"), beta.Betas[0])
+}
+
+func TestConvertToBetaParams_PropagatesThinking(t *testing.T) {
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.ModelClaudeOpus4_6,
+		MaxTokens: 128000,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("Think")),
+		},
+		Thinking: anthropic.ThinkingConfigParamOfEnabled(10000),
+	}
+
+	compact := CompactConfig{
+		Strategy:      CompactServer,
+		TriggerTokens: 100000,
+	}
+
+	beta := convertToBetaParams(params, compact, nil)
+
+	// Thinking should be propagated
+	require.NotNil(t, beta.Thinking.OfEnabled)
+	assert.Equal(t, int64(10000), beta.Thinking.OfEnabled.BudgetTokens)
+}
+
+// --- convertToBetaParamsNoCompact ---
+
+func TestConvertToBetaParamsNoCompact_Basic(t *testing.T) {
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.ModelClaudeOpus4_6,
+		MaxTokens: 4096,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("Hello")),
+		},
+	}
+
+	beta := convertToBetaParamsNoCompact(params, []string{"context-1m-2025-08-07"})
+
+	assert.Equal(t, anthropic.ModelClaudeOpus4_6, beta.Model)
+	assert.Equal(t, int64(4096), beta.MaxTokens)
+	require.Len(t, beta.Messages, 1)
+	require.Len(t, beta.Betas, 1)
+	assert.Equal(t, anthropic.AnthropicBeta("context-1m-2025-08-07"), beta.Betas[0])
+}
+
+func TestConvertToBetaParamsNoCompact_WithThinking(t *testing.T) {
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.ModelClaudeOpus4_6,
+		MaxTokens: 128000,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock("Think")),
+		},
+		Thinking: anthropic.ThinkingConfigParamOfEnabled(50000),
+	}
+
+	beta := convertToBetaParamsNoCompact(params, []string{"my-beta"})
+
+	require.NotNil(t, beta.Thinking.OfEnabled)
+	assert.Equal(t, int64(50000), beta.Thinking.OfEnabled.BudgetTokens)
+}
+
+// --- mergeBetas ---
+
+func TestMergeBetas_Empty(t *testing.T) {
+	result := mergeBetas(nil, nil)
+	assert.Len(t, result, 0)
+}
+
+func TestMergeBetas_InternalOnly(t *testing.T) {
+	result := mergeBetas([]string{"a", "b"}, nil)
+	require.Len(t, result, 2)
+	assert.Equal(t, anthropic.AnthropicBeta("a"), result[0])
+	assert.Equal(t, anthropic.AnthropicBeta("b"), result[1])
+}
+
+func TestMergeBetas_UserOnly(t *testing.T) {
+	result := mergeBetas(nil, []string{"x", "y"})
+	require.Len(t, result, 2)
+	assert.Equal(t, anthropic.AnthropicBeta("x"), result[0])
+	assert.Equal(t, anthropic.AnthropicBeta("y"), result[1])
+}
+
+func TestMergeBetas_Dedup(t *testing.T) {
+	result := mergeBetas([]string{"a", "b"}, []string{"b", "c"})
+	require.Len(t, result, 3)
+	assert.Equal(t, anthropic.AnthropicBeta("a"), result[0])
+	assert.Equal(t, anthropic.AnthropicBeta("b"), result[1])
+	assert.Equal(t, anthropic.AnthropicBeta("c"), result[2])
 }

@@ -42,7 +42,7 @@ func (t *GrepTool) Execute(ctx context.Context, input GrepInput) (*agent.ToolRes
 	args := buildRgArgs(input)
 
 	cmd := exec.CommandContext(ctx, rgPath, args...)
-	cmd.Dir = searchPath(input.Path)
+	cmd.Dir = searchPathFromContext(ctx, input.Path)
 
 	output, err := cmd.CombinedOutput()
 	text := string(output)
@@ -107,9 +107,12 @@ func buildRgArgs(input GrepInput) []string {
 	return args
 }
 
-func searchPath(path string) string {
+func searchPathFromContext(ctx context.Context, path string) string {
 	if path != "" {
 		return ""
+	}
+	if dir := agent.ContextWorkDir(ctx); dir != "" {
+		return dir
 	}
 	dir, err := os.Getwd()
 	if err != nil {

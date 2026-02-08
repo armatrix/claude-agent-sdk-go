@@ -2,6 +2,7 @@ package agent
 
 import (
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/shopspring/decimal"
 
 	"github.com/armatrix/claude-agent-sdk-go/hook"
@@ -33,22 +34,37 @@ type CompactConfig struct {
 	PreserveLastN     int
 }
 
+// SystemPromptPreset identifies a built-in system prompt template.
+type SystemPromptPreset string
+
+const (
+	// PresetDefault means no preset — use the custom system prompt as-is.
+	PresetDefault SystemPromptPreset = ""
+	// PresetClaudeCode selects the Claude Code system prompt.
+	PresetClaudeCode SystemPromptPreset = "claude_code"
+)
+
 // agentOptions holds all configurable fields set via AgentOption functions.
 type agentOptions struct {
-	model           anthropic.Model
-	contextWindow   int
-	maxOutputTokens int
-	maxTurns        int
-	maxBudget       decimal.Decimal
-	compact         CompactConfig
-	streamBufferSize int
+	model             anthropic.Model
+	contextWindow     int
+	maxOutputTokens   int
+	maxTurns          int
+	maxThinkingTokens int64
+	maxBudget         decimal.Decimal
+	compact           CompactConfig
+	streamBufferSize  int
+	betas             []string
 
 	// System prompt injected before conversation.
-	systemPrompt string
+	systemPrompt       string
+	systemPromptPreset SystemPromptPreset
 
 	// Tool configuration.
-	builtinTools  []string
-	disabledTools []string
+	builtinTools        []string
+	disabledTools       []string
+	toolSearch          bool
+	toolSearchThreshold float64
 
 	// Session store for persistence.
 	sessionStore SessionStore
@@ -65,9 +81,50 @@ type agentOptions struct {
 	// Hook matchers for pre/post tool use callbacks.
 	hookMatchers []hook.Matcher
 
-	// Permission mode and optional callback for tool access control.
-	permissionMode permission.Mode
-	permissionFunc permission.Func
+	// Permission mode, rules, and optional callback for tool access control.
+	permissionMode  permission.Mode
+	permissionRules []permission.Rule
+	permissionFunc  permission.Func
+
+	// Working directory for tool execution (Bash cmd.Dir, file path resolution).
+	workDir string
+
+	// Environment variables merged into tool execution context.
+	env map[string]string
+
+	// Anthropic client options (auth provider, base URL, etc.).
+	// Passed directly to anthropic.NewClient().
+	clientOptions []option.RequestOption
+
+	// Post-construction initialization callbacks. Sub-packages (subagent, mcp)
+	// use these to inject setup logic without import cycles.
+	onInit []func(*Agent)
+
+	// Fallback model used when the primary model returns overloaded/unavailable.
+	fallbackModel anthropic.Model
+
+	// Sandbox configuration for restricting tool execution.
+	sandbox *SandboxConfig
+
+	// Slash command directories to scan for .md command files.
+	commandDirs []string
+
+	// Cleanup callbacks executed by Agent.Close().
+	onClose []func() error
+}
+
+// SandboxConfig controls tool execution restrictions.
+type SandboxConfig struct {
+	// AllowedDirs restricts file tools (Read/Write/Edit/Glob/Grep) to these directories.
+	// Empty means no restriction.
+	AllowedDirs []string
+
+	// BlockedCommands prevents Bash from executing these commands.
+	BlockedCommands []string
+
+	// AllowNetwork controls whether Bash commands can access the network.
+	// Default true (allowed).
+	AllowNetwork bool
 }
 
 // applyDefaults fills in zero-value fields with sensible defaults.
@@ -125,6 +182,19 @@ func WithMaxTurns(n int) AgentOption {
 	return func(o *agentOptions) { o.maxTurns = n }
 }
 
+// WithMaxThinkingTokens enables extended thinking with the given budget.
+// When set to a positive value, the API will use thinking mode with
+// BudgetTokens set to this value. Zero (default) disables thinking.
+func WithMaxThinkingTokens(n int64) AgentOption {
+	return func(o *agentOptions) { o.maxThinkingTokens = n }
+}
+
+// WithBetas sets the beta feature flags to include in API requests.
+// These are merged with any internally required betas (e.g. compaction).
+func WithBetas(betas ...string) AgentOption {
+	return func(o *agentOptions) { o.betas = betas }
+}
+
 // --- Budget ---
 
 // WithBudget sets the maximum budget in USD for a run. Zero means unlimited.
@@ -166,12 +236,32 @@ func WithDisabledTools(names ...string) AgentOption {
 	return func(o *agentOptions) { o.disabledTools = names }
 }
 
+// WithToolSearch enables the ToolSearch meta-tool. When enabled, if the tool
+// schema token estimate exceeds the threshold ratio of the context window,
+// the full tool list is replaced with just the ToolSearch tool for that API call.
+func WithToolSearch(enabled bool) AgentOption {
+	return func(o *agentOptions) { o.toolSearch = enabled }
+}
+
+// WithToolSearchThreshold sets the ratio of tool schema tokens to context window
+// that triggers ToolSearch mode. Default is 0.1 (10%).
+func WithToolSearchThreshold(ratio float64) AgentOption {
+	return func(o *agentOptions) { o.toolSearchThreshold = ratio }
+}
+
 // --- System Prompt ---
 
 // WithSystemPrompt sets the system prompt for the agent.
 // The system prompt is sent as the first system message in every API call.
 func WithSystemPrompt(prompt string) AgentOption {
 	return func(o *agentOptions) { o.systemPrompt = prompt }
+}
+
+// WithSystemPromptPreset selects a built-in system prompt preset.
+// If a custom system prompt is also set via WithSystemPrompt, the custom
+// prompt takes precedence and the preset is ignored.
+func WithSystemPromptPreset(preset SystemPromptPreset) AgentOption {
+	return func(o *agentOptions) { o.systemPromptPreset = preset }
 }
 
 // --- Session ---
@@ -244,4 +334,106 @@ func WithPermissionMode(mode permission.Mode) AgentOption {
 // When set, this function is called instead of the mode-based default behavior.
 func WithPermissionFunc(fn permission.Func) AgentOption {
 	return func(o *agentOptions) { o.permissionFunc = fn }
+}
+
+// WithPermissionRules sets declarative permission rules with glob pattern matching.
+// Rules are evaluated before the mode-based defaults. Deny rules take priority
+// over Ask rules, which take priority over Allow rules.
+func WithPermissionRules(rules ...permission.Rule) AgentOption {
+	return func(o *agentOptions) { o.permissionRules = append(o.permissionRules, rules...) }
+}
+
+// WithAllowedTools is a convenience that creates Allow rules for the given patterns.
+// Patterns support glob matching (e.g. "mcp__*", "Read", "Edit").
+func WithAllowedTools(patterns ...string) AgentOption {
+	return func(o *agentOptions) {
+		for _, p := range patterns {
+			o.permissionRules = append(o.permissionRules, permission.Rule{
+				Pattern:  p,
+				Decision: permission.Allow,
+			})
+		}
+	}
+}
+
+// WithDisallowedTools is a convenience that creates Deny rules for the given patterns.
+// Patterns support glob matching (e.g. "Bash", "mcp__*").
+func WithDisallowedTools(patterns ...string) AgentOption {
+	return func(o *agentOptions) {
+		for _, p := range patterns {
+			o.permissionRules = append(o.permissionRules, permission.Rule{
+				Pattern:  p,
+				Decision: permission.Deny,
+			})
+		}
+	}
+}
+
+// --- Working Directory & Environment ---
+
+// WithWorkDir sets the working directory for tool execution.
+// Bash commands will use this as cmd.Dir, and file tools will resolve
+// relative paths against it.
+func WithWorkDir(dir string) AgentOption {
+	return func(o *agentOptions) { o.workDir = dir }
+}
+
+// WithEnv sets environment variables that are merged into tool execution.
+// These are added on top of the inherited OS environment.
+func WithEnv(env map[string]string) AgentOption {
+	return func(o *agentOptions) { o.env = env }
+}
+
+// --- Client Options (Authentication) ---
+
+// WithClientOptions sets raw anthropic-sdk-go request options.
+// Use this for custom authentication (Bedrock, Vertex, API key), base URL overrides, etc.
+//
+// Example:
+//
+//	// AWS Bedrock
+//	agent.NewAgent(agent.WithClientOptions(bedrock.WithLoadDefaultConfig(ctx)))
+//
+//	// Google Vertex AI
+//	agent.NewAgent(agent.WithClientOptions(vertex.WithGoogleAuth(ctx, region, project)))
+//
+//	// Custom API key
+//	agent.NewAgent(agent.WithClientOptions(option.WithAPIKey("sk-...")))
+func WithClientOptions(opts ...option.RequestOption) AgentOption {
+	return func(o *agentOptions) { o.clientOptions = opts }
+}
+
+// --- Fallback Model ---
+
+// WithFallbackModel sets a fallback model to use when the primary model returns
+// an overloaded or model_unavailable error. The loop will retry once with this model.
+func WithFallbackModel(model anthropic.Model) AgentOption {
+	return func(o *agentOptions) { o.fallbackModel = model }
+}
+
+// --- Sandbox ---
+
+// WithSandbox sets sandbox restrictions for tool execution.
+// AllowedDirs restricts file operations, BlockedCommands prevents specific commands.
+func WithSandbox(config SandboxConfig) AgentOption {
+	return func(o *agentOptions) { o.sandbox = &config }
+}
+
+// --- Slash Commands ---
+
+// WithCommandDirs sets directories to scan for .md slash command files.
+// Commands are loaded from files like /commit.md, /review.md, etc.
+func WithCommandDirs(dirs ...string) AgentOption {
+	return func(o *agentOptions) { o.commandDirs = dirs }
+}
+
+// --- Initialization Hooks ---
+
+// WithOnInit registers a callback that runs after Agent construction.
+// Sub-packages use this to inject setup logic without creating import cycles.
+// Callbacks are executed in registration order.
+func WithOnInit(fn func(*Agent)) AgentOption {
+	return func(o *agentOptions) {
+		o.onInit = append(o.onInit, fn)
+	}
 }

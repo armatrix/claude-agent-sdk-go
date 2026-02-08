@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/anthropics/anthropic-sdk-go"
 
@@ -20,6 +22,9 @@ type Agent struct {
 	apiClient *anthropic.Client
 	tools     *ToolRegistry
 	opts      agentOptions
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewAgent creates a new Agent with the given options.
@@ -51,13 +56,28 @@ func NewAgent(opts ...AgentOption) *Agent {
 		}
 	}
 
-	client := anthropic.NewClient()
+	// Resolve system prompt preset (only if no explicit system prompt is set)
+	if resolved.systemPrompt == "" && resolved.systemPromptPreset != "" {
+		if content, ok := config.GetPreset(string(resolved.systemPromptPreset)); ok {
+			resolved.systemPrompt = content
+		}
+	}
 
-	return &Agent{
+	client := anthropic.NewClient(resolved.clientOptions...)
+
+	a := &Agent{
 		apiClient: &client,
 		tools:     NewToolRegistry(),
 		opts:      resolved,
 	}
+
+	// Run post-construction initialization hooks.
+	// Sub-packages (subagent, mcp) use these to register tools without import cycles.
+	for _, fn := range resolved.onInit {
+		fn(a)
+	}
+
+	return a
 }
 
 // applySettings merges loaded settings into resolved options.
@@ -95,6 +115,31 @@ func (a *Agent) Run(ctx context.Context, prompt string) *AgentStream {
 // RunWithSession starts an agent execution using an existing session.
 // The session's message history is preserved and extended.
 func (a *Agent) RunWithSession(ctx context.Context, session *Session, prompt string) *AgentStream {
+	// Inject workDir, env, and sandbox into context for tool execution
+	if a.opts.workDir != "" {
+		ctx = WithContextWorkDir(ctx, a.opts.workDir)
+	}
+	if len(a.opts.env) > 0 {
+		ctx = WithContextEnv(ctx, a.opts.env)
+	}
+	if a.opts.sandbox != nil {
+		ctx = WithContextSandbox(ctx, a.opts.sandbox)
+	}
+
+	// Build hook runner once (reused for UserPromptSubmit and engine loop)
+	var hookRunner *hookrunner.Runner
+	if len(a.opts.hookMatchers) > 0 {
+		runner, err := hookrunner.New(a.opts.hookMatchers)
+		if err == nil {
+			hookRunner = runner
+		}
+	}
+
+	// Fire UserPromptSubmit hook before appending user message
+	if hookRunner != nil {
+		_, _ = hookRunner.RunUserPromptSubmit(ctx, session.ID, prompt)
+	}
+
 	// Append user prompt to session
 	session.Messages = append(session.Messages,
 		anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)))
@@ -102,28 +147,37 @@ func (a *Agent) RunWithSession(ctx context.Context, session *Session, prompt str
 	eventCh := make(chan Event, a.opts.streamBufferSize)
 	stream := newStream(eventCh, session)
 
-	// Choose streamer based on compaction strategy
+	// Choose streamer based on compaction strategy and beta flags
 	var streamer engine.MessageStreamer
-	if a.opts.compact.Strategy == CompactServer {
-		streamer = engine.NewCompactStreamer(a.apiClient, engine.CompactConfig{
-			Strategy:          engine.CompactServer,
-			TriggerTokens:     a.opts.compact.TriggerTokens,
-			PauseAfterCompact: a.opts.compact.PauseAfterCompact,
-			Instructions:      a.opts.compact.Instructions,
-		})
-	} else {
+	compactCfg := engine.CompactConfig{
+		Strategy:          engine.CompactServer,
+		TriggerTokens:     a.opts.compact.TriggerTokens,
+		PauseAfterCompact: a.opts.compact.PauseAfterCompact,
+		Instructions:      a.opts.compact.Instructions,
+	}
+	switch {
+	case a.opts.compact.Strategy == CompactServer && len(a.opts.betas) > 0:
+		streamer = engine.NewCompactStreamerWithBetas(a.apiClient, compactCfg, a.opts.betas)
+	case a.opts.compact.Strategy == CompactServer:
+		streamer = engine.NewCompactStreamer(a.apiClient, compactCfg)
+	case len(a.opts.betas) > 0:
+		streamer = engine.NewBetaStreamer(a.apiClient, a.opts.betas)
+	default:
 		streamer = engine.NewMessageStreamer(&a.apiClient.Messages)
 	}
 
 	cfg := engine.LoopConfig{
-		Streamer:  streamer,
-		Tools:     &toolExecutorAdapter{registry: a.tools},
-		Model:     a.opts.model,
-		MaxTokens: a.opts.maxOutputTokens,
-		MaxTurns:  a.opts.maxTurns,
-		Messages:  &session.Messages,
-		SessionID: session.ID,
-		Sink:      &channelSink{ch: eventCh},
+		Streamer:          streamer,
+		Tools:             &toolExecutorAdapter{registry: a.tools},
+		Model:             a.opts.model,
+		FallbackModel:     a.opts.fallbackModel,
+		MaxTokens:         a.opts.maxOutputTokens,
+		MaxTurns:          a.opts.maxTurns,
+		MaxThinkingTokens: a.opts.maxThinkingTokens,
+		Betas:             a.opts.betas,
+		Messages:          &session.Messages,
+		SessionID:         session.ID,
+		Sink:              &channelSink{ch: eventCh},
 	}
 
 	// Wire system prompt
@@ -148,17 +202,14 @@ func (a *Agent) RunWithSession(ctx context.Context, session *Session, prompt str
 		}
 	}
 
-	// Wire hooks
-	if len(a.opts.hookMatchers) > 0 {
-		runner, err := hookrunner.New(a.opts.hookMatchers)
-		if err == nil {
-			cfg.Hooks = &hookRunnerAdapter{runner: runner}
-		}
+	// Wire hooks (reuse runner built above)
+	if hookRunner != nil {
+		cfg.Hooks = &hookRunnerAdapter{runner: hookRunner}
 	}
 
 	// Wire permissions
-	if a.opts.permissionMode != permission.ModeDefault || a.opts.permissionFunc != nil {
-		checker := permission.NewChecker(a.opts.permissionMode, a.opts.permissionFunc)
+	if a.opts.permissionMode != permission.ModeDefault || a.opts.permissionFunc != nil || len(a.opts.permissionRules) > 0 {
+		checker := permission.NewCheckerWithRules(a.opts.permissionMode, a.opts.permissionRules, a.opts.permissionFunc)
 		cfg.Permission = &permissionAdapter{checker: checker}
 	}
 
@@ -178,6 +229,31 @@ func (a *Agent) Model() anthropic.Model {
 // Options returns a copy of the resolved agent options (for testing/inspection).
 func (a *Agent) Options() agentOptions {
 	return a.opts
+}
+
+// Close releases resources held by the Agent (MCP connections, etc.).
+// It is idempotent — calling Close multiple times returns the same result,
+// and cleanup callbacks are only executed once.
+func (a *Agent) Close() error {
+	a.closeOnce.Do(func() {
+		var errs []error
+		for _, fn := range a.opts.onClose {
+			if err := fn(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		a.closeErr = errors.Join(errs...)
+	})
+	return a.closeErr
+}
+
+// AddCleanup registers a cleanup callback that will be called by Close().
+//
+// This method is NOT goroutine-safe. It must only be called from within
+// WithOnInit callbacks during Agent construction (i.e. inside NewAgent).
+// Calling it after NewAgent returns may race with Close().
+func (a *Agent) AddCleanup(fn func() error) {
+	a.opts.onClose = append(a.opts.onClose, fn)
 }
 
 // toolExecutorAdapter wraps ToolRegistry to implement internal/agent.ToolExecutor.
@@ -235,6 +311,18 @@ func (s *channelSink) OnCompact(info engine.CompactInfo) {
 
 func (s *channelSink) OnResult(info engine.ResultInfo) {
 	result := extractResultText(info)
+
+	var modelUsage map[string]ModelUsage
+	if len(info.ModelUsage) > 0 {
+		modelUsage = make(map[string]ModelUsage, len(info.ModelUsage))
+		for model, mu := range info.ModelUsage {
+			modelUsage[model] = ModelUsage{
+				InputTokens:  mu.InputTokens,
+				OutputTokens: mu.OutputTokens,
+			}
+		}
+	}
+
 	s.ch <- &ResultEvent{
 		Subtype:   info.Subtype,
 		SessionID: info.SessionID,
@@ -246,6 +334,7 @@ func (s *channelSink) OnResult(info engine.ResultInfo) {
 			CacheReadInputTokens:     info.CacheReadInputTokens,
 			CacheCreationInputTokens: info.CacheCreationInputTokens,
 		},
+		ModelUsage: modelUsage,
 		DurationMs: info.DurationMs,
 		Result:     result,
 		Errors:     info.Errors,
@@ -307,6 +396,52 @@ func (h *hookRunnerAdapter) RunPostToolFailure(ctx context.Context, sessionID, t
 
 func (h *hookRunnerAdapter) RunStop(ctx context.Context, sessionID string) error {
 	return h.runner.RunStop(ctx, sessionID)
+}
+
+func (h *hookRunnerAdapter) RunSessionStart(ctx context.Context, sessionID string) error {
+	return h.runner.RunSessionStart(ctx, sessionID)
+}
+
+func (h *hookRunnerAdapter) RunSessionEnd(ctx context.Context, sessionID string) error {
+	return h.runner.RunSessionEnd(ctx, sessionID)
+}
+
+func (h *hookRunnerAdapter) RunPreCompact(ctx context.Context, sessionID, strategy string) error {
+	return h.runner.RunPreCompact(ctx, sessionID, strategy)
+}
+
+func (h *hookRunnerAdapter) RunPostCompact(ctx context.Context, sessionID, strategy string) error {
+	return h.runner.RunPostCompact(ctx, sessionID, strategy)
+}
+
+func (h *hookRunnerAdapter) RunPreAPIRequest(ctx context.Context, sessionID, model string, messageCount int) error {
+	return h.runner.RunPreAPIRequest(ctx, sessionID, model, messageCount)
+}
+
+func (h *hookRunnerAdapter) RunPostAPIRequest(ctx context.Context, sessionID, model string, inputTokens, outputTokens int64) error {
+	return h.runner.RunPostAPIRequest(ctx, sessionID, model, inputTokens, outputTokens)
+}
+
+func (h *hookRunnerAdapter) RunToolResult(ctx context.Context, sessionID, toolName string, input json.RawMessage, output string, isError bool) error {
+	return h.runner.RunToolResult(ctx, sessionID, toolName, input, output, isError)
+}
+
+func (h *hookRunnerAdapter) RunNotification(ctx context.Context, sessionID, notifType string, payload json.RawMessage) error {
+	return h.runner.RunNotification(ctx, sessionID, notifType, payload)
+}
+
+func (h *hookRunnerAdapter) RunPermissionRequest(ctx context.Context, sessionID, toolName string, input json.RawMessage) (*engine.HookPreToolResult, error) {
+	result, err := h.runner.RunPermissionRequest(ctx, sessionID, toolName, input)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	return &engine.HookPreToolResult{
+		Block:  result.Block,
+		Reason: result.Reason,
+	}, nil
 }
 
 // permissionAdapter wraps permission.Checker to implement engine.PermissionChecker.

@@ -9,6 +9,8 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/armatrix/claude-agent-sdk-go/permission"
 )
 
 func TestResolveOptionsDefaults(t *testing.T) {
@@ -220,4 +222,246 @@ func TestNewAgent_SkillsPrepend(t *testing.T) {
 	assert.Contains(t, a.Options().systemPrompt, "Base prompt")
 	// Skills should be prepended
 	assert.True(t, len(a.Options().systemPrompt) > len("Base prompt"))
+}
+
+// --- WithOnInit ---
+
+func TestWithOnInit_StoresCallbacks(t *testing.T) {
+	var callCount int
+	opts := resolveOptions([]AgentOption{
+		WithOnInit(func(a *Agent) { callCount++ }),
+		WithOnInit(func(a *Agent) { callCount++ }),
+	})
+	assert.Len(t, opts.onInit, 2)
+}
+
+func TestWithOnInit_RunsInNewAgent(t *testing.T) {
+	var called bool
+	NewAgent(WithOnInit(func(a *Agent) {
+		called = true
+		assert.NotNil(t, a.Tools())
+	}))
+	assert.True(t, called)
+}
+
+func TestWithOnInit_RunsInOrder(t *testing.T) {
+	var order []int
+	NewAgent(
+		WithOnInit(func(a *Agent) { order = append(order, 1) }),
+		WithOnInit(func(a *Agent) { order = append(order, 2) }),
+		WithOnInit(func(a *Agent) { order = append(order, 3) }),
+	)
+	assert.Equal(t, []int{1, 2, 3}, order)
+}
+
+func TestWithOnInit_Empty_NoPanic(t *testing.T) {
+	assert.NotPanics(t, func() {
+		NewAgent() // no onInit callbacks
+	})
+}
+
+// --- WithMaxThinkingTokens ---
+
+func TestWithMaxThinkingTokens(t *testing.T) {
+	opts := resolveOptions([]AgentOption{
+		WithMaxThinkingTokens(10000),
+	})
+	assert.Equal(t, int64(10000), opts.maxThinkingTokens)
+}
+
+func TestWithMaxThinkingTokens_Default_Zero(t *testing.T) {
+	opts := resolveOptions(nil)
+	assert.Equal(t, int64(0), opts.maxThinkingTokens)
+}
+
+// --- WithBetas ---
+
+func TestWithBetas(t *testing.T) {
+	opts := resolveOptions([]AgentOption{
+		WithBetas("context-1m-2025-08-07", "custom-beta"),
+	})
+	assert.Equal(t, []string{"context-1m-2025-08-07", "custom-beta"}, opts.betas)
+}
+
+func TestWithBetas_Default_Nil(t *testing.T) {
+	opts := resolveOptions(nil)
+	assert.Nil(t, opts.betas)
+}
+
+func TestWithBetas_Single(t *testing.T) {
+	opts := resolveOptions([]AgentOption{
+		WithBetas("context-1m-2025-08-07"),
+	})
+	assert.Equal(t, []string{"context-1m-2025-08-07"}, opts.betas)
+}
+
+// --- WithWorkDir & WithEnv ---
+
+func TestWithWorkDir(t *testing.T) {
+	opts := resolveOptions([]AgentOption{
+		WithWorkDir("/tmp/project"),
+	})
+	assert.Equal(t, "/tmp/project", opts.workDir)
+}
+
+func TestWithEnv(t *testing.T) {
+	env := map[string]string{"FOO": "bar", "BAZ": "qux"}
+	opts := resolveOptions([]AgentOption{
+		WithEnv(env),
+	})
+	assert.Equal(t, env, opts.env)
+}
+
+func TestWithWorkDir_Default_Empty(t *testing.T) {
+	opts := resolveOptions(nil)
+	assert.Equal(t, "", opts.workDir)
+}
+
+func TestWithEnv_Default_Nil(t *testing.T) {
+	opts := resolveOptions(nil)
+	assert.Nil(t, opts.env)
+}
+
+// --- WithSystemPromptPreset ---
+
+func TestWithSystemPromptPreset(t *testing.T) {
+	opts := resolveOptions([]AgentOption{
+		WithSystemPromptPreset(PresetClaudeCode),
+	})
+	assert.Equal(t, PresetClaudeCode, opts.systemPromptPreset)
+}
+
+func TestWithSystemPromptPreset_Default_Empty(t *testing.T) {
+	opts := resolveOptions(nil)
+	assert.Equal(t, PresetDefault, opts.systemPromptPreset)
+}
+
+func TestNewAgent_PresetResolvesPrompt(t *testing.T) {
+	a := NewAgent(WithSystemPromptPreset(PresetClaudeCode))
+	assert.NotEmpty(t, a.Options().systemPrompt)
+	assert.Contains(t, a.Options().systemPrompt, "tool")
+}
+
+func TestNewAgent_ExplicitPromptOverridesPreset(t *testing.T) {
+	a := NewAgent(
+		WithSystemPrompt("My custom prompt"),
+		WithSystemPromptPreset(PresetClaudeCode),
+	)
+	assert.Equal(t, "My custom prompt", a.Options().systemPrompt)
+}
+
+// --- WithPermissionRules, WithAllowedTools, WithDisallowedTools ---
+
+func TestWithPermissionRules(t *testing.T) {
+	rules := []permission.Rule{
+		{Pattern: "Bash", Decision: permission.Deny},
+		{Pattern: "mcp__*", Decision: permission.Allow},
+	}
+	opts := resolveOptions([]AgentOption{
+		WithPermissionRules(rules...),
+	})
+	assert.Len(t, opts.permissionRules, 2)
+	assert.Equal(t, "Bash", opts.permissionRules[0].Pattern)
+	assert.Equal(t, permission.Deny, opts.permissionRules[0].Decision)
+	assert.Equal(t, "mcp__*", opts.permissionRules[1].Pattern)
+	assert.Equal(t, permission.Allow, opts.permissionRules[1].Decision)
+}
+
+func TestWithAllowedTools(t *testing.T) {
+	opts := resolveOptions([]AgentOption{
+		WithAllowedTools("mcp__*", "Read"),
+	})
+	assert.Len(t, opts.permissionRules, 2)
+	assert.Equal(t, permission.Allow, opts.permissionRules[0].Decision)
+	assert.Equal(t, "mcp__*", opts.permissionRules[0].Pattern)
+	assert.Equal(t, permission.Allow, opts.permissionRules[1].Decision)
+	assert.Equal(t, "Read", opts.permissionRules[1].Pattern)
+}
+
+func TestWithDisallowedTools(t *testing.T) {
+	opts := resolveOptions([]AgentOption{
+		WithDisallowedTools("Bash", "Write"),
+	})
+	assert.Len(t, opts.permissionRules, 2)
+	assert.Equal(t, permission.Deny, opts.permissionRules[0].Decision)
+	assert.Equal(t, "Bash", opts.permissionRules[0].Pattern)
+	assert.Equal(t, permission.Deny, opts.permissionRules[1].Decision)
+	assert.Equal(t, "Write", opts.permissionRules[1].Pattern)
+}
+
+func TestWithPermissionRules_Composable(t *testing.T) {
+	opts := resolveOptions([]AgentOption{
+		WithAllowedTools("mcp__*"),
+		WithDisallowedTools("Bash"),
+		WithPermissionRules(permission.Rule{Pattern: "Edit", Decision: permission.Ask}),
+	})
+	assert.Len(t, opts.permissionRules, 3)
+	assert.Equal(t, permission.Allow, opts.permissionRules[0].Decision)
+	assert.Equal(t, permission.Deny, opts.permissionRules[1].Decision)
+	assert.Equal(t, permission.Ask, opts.permissionRules[2].Decision)
+}
+
+func TestWithPermissionRules_Default_Nil(t *testing.T) {
+	opts := resolveOptions(nil)
+	assert.Nil(t, opts.permissionRules)
+}
+
+// --- WithToolSearch ---
+
+func TestWithToolSearch(t *testing.T) {
+	opts := resolveOptions([]AgentOption{
+		WithToolSearch(true),
+	})
+	assert.True(t, opts.toolSearch)
+}
+
+func TestWithToolSearchThreshold(t *testing.T) {
+	opts := resolveOptions([]AgentOption{
+		WithToolSearchThreshold(0.2),
+	})
+	assert.Equal(t, 0.2, opts.toolSearchThreshold)
+}
+
+// --- WithFallbackModel ---
+
+func TestWithFallbackModel(t *testing.T) {
+	opts := resolveOptions([]AgentOption{
+		WithFallbackModel(anthropic.ModelClaudeHaiku4_5),
+	})
+	assert.Equal(t, anthropic.ModelClaudeHaiku4_5, opts.fallbackModel)
+}
+
+func TestWithFallbackModel_Default_Empty(t *testing.T) {
+	opts := resolveOptions(nil)
+	assert.Equal(t, anthropic.Model(""), opts.fallbackModel)
+}
+
+// --- WithSandbox ---
+
+func TestWithSandbox(t *testing.T) {
+	opts := resolveOptions([]AgentOption{
+		WithSandbox(SandboxConfig{
+			AllowedDirs:     []string{"/tmp", "/home"},
+			BlockedCommands: []string{"rm", "curl"},
+			AllowNetwork:    false,
+		}),
+	})
+	require.NotNil(t, opts.sandbox)
+	assert.Equal(t, []string{"/tmp", "/home"}, opts.sandbox.AllowedDirs)
+	assert.Equal(t, []string{"rm", "curl"}, opts.sandbox.BlockedCommands)
+	assert.False(t, opts.sandbox.AllowNetwork)
+}
+
+func TestWithSandbox_Default_Nil(t *testing.T) {
+	opts := resolveOptions(nil)
+	assert.Nil(t, opts.sandbox)
+}
+
+// --- WithCommandDirs ---
+
+func TestWithCommandDirs(t *testing.T) {
+	opts := resolveOptions([]AgentOption{
+		WithCommandDirs("/cmds1", "/cmds2"),
+	})
+	assert.Equal(t, []string{"/cmds1", "/cmds2"}, opts.commandDirs)
 }

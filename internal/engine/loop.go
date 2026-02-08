@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -75,6 +76,15 @@ type HookRunner interface {
 	RunPostToolUse(ctx context.Context, sessionID, toolName string, input json.RawMessage, output string) error
 	RunPostToolFailure(ctx context.Context, sessionID, toolName string, input json.RawMessage, toolErr error) error
 	RunStop(ctx context.Context, sessionID string) error
+	RunSessionStart(ctx context.Context, sessionID string) error
+	RunSessionEnd(ctx context.Context, sessionID string) error
+	RunPreCompact(ctx context.Context, sessionID, strategy string) error
+	RunPostCompact(ctx context.Context, sessionID, strategy string) error
+	RunPreAPIRequest(ctx context.Context, sessionID, model string, messageCount int) error
+	RunPostAPIRequest(ctx context.Context, sessionID, model string, inputTokens, outputTokens int64) error
+	RunToolResult(ctx context.Context, sessionID, toolName string, input json.RawMessage, output string, isError bool) error
+	RunNotification(ctx context.Context, sessionID, notifType string, payload json.RawMessage) error
+	RunPermissionRequest(ctx context.Context, sessionID, toolName string, input json.RawMessage) (*HookPreToolResult, error)
 }
 
 // PermissionChecker evaluates whether a tool is allowed to execute.
@@ -88,6 +98,12 @@ type CompactInfo struct {
 	Strategy CompactStrategy
 }
 
+// PerModelUsage tracks token usage for a single model.
+type PerModelUsage struct {
+	InputTokens  int64
+	OutputTokens int64
+}
+
 // ResultInfo contains the data for a result event.
 type ResultInfo struct {
 	Subtype                  string
@@ -99,6 +115,7 @@ type ResultInfo struct {
 	OutputTokens             int64
 	CacheReadInputTokens     int64
 	CacheCreationInputTokens int64
+	ModelUsage               map[string]PerModelUsage
 	Errors                   []string
 }
 
@@ -109,6 +126,18 @@ type LoopConfig struct {
 	Model     anthropic.Model
 	MaxTokens int
 	MaxTurns  int
+
+	// FallbackModel is used when the primary model returns overloaded/unavailable.
+	// Empty means no fallback — errors propagate immediately.
+	FallbackModel anthropic.Model
+
+	// MaxThinkingTokens enables extended thinking when > 0.
+	// The API Thinking config will be set to enabled with this budget.
+	MaxThinkingTokens int64
+
+	// Betas are beta feature flags to include in API requests.
+	// These are merged with any internally required betas (e.g. compaction).
+	Betas []string
 
 	// Messages is the mutable message history. The loop appends to it.
 	Messages *[]anthropic.MessageParam
@@ -144,9 +173,20 @@ type LoopConfig struct {
 func RunLoop(ctx context.Context, cfg LoopConfig) {
 	startTime := time.Now()
 	var inputTokens, outputTokens, cacheRead, cacheCreation int64
+	modelUsage := make(map[string]PerModelUsage)
 
 	// 1. Emit SystemEvent
 	cfg.Sink.OnSystem(cfg.SessionID, cfg.Model)
+
+	// SessionStart hook
+	if cfg.Hooks != nil {
+		_ = cfg.Hooks.RunSessionStart(ctx, cfg.SessionID)
+	}
+
+	// SessionEnd hook — guaranteed to fire on every exit path
+	if cfg.Hooks != nil {
+		defer func() { _ = cfg.Hooks.RunSessionEnd(ctx, cfg.SessionID) }()
+	}
 
 	turns := 0
 
@@ -159,16 +199,28 @@ func RunLoop(ctx context.Context, cfg LoopConfig) {
 				IsError:    true,
 				NumTurns:   turns,
 				DurationMs: time.Since(startTime).Milliseconds(),
+				ModelUsage: modelUsage,
 				Errors:     []string{ctx.Err().Error()},
 			})
 			return
 		}
 
-		// Build API params
+		// Build API params — use current model (may switch to fallback on retry)
+		currentModel := cfg.Model
 		params := anthropic.MessageNewParams{
-			Model:     cfg.Model,
+			Model:     currentModel,
 			MaxTokens: int64(cfg.MaxTokens),
 			Messages:  *cfg.Messages,
+		}
+
+		// Enable extended thinking if configured
+		if cfg.MaxThinkingTokens > 0 {
+			params.Thinking = anthropic.ThinkingConfigParamOfEnabled(cfg.MaxThinkingTokens)
+			// Thinking mode requires MaxTokens >= budget + output headroom
+			minRequired := cfg.MaxThinkingTokens + 16384
+			if params.MaxTokens < minRequired {
+				params.MaxTokens = minRequired
+			}
 		}
 
 		// Set system prompt if configured
@@ -187,6 +239,11 @@ func RunLoop(ctx context.Context, cfg LoopConfig) {
 			cfg.OutputToolInjector(&params)
 		}
 
+		// PreAPIRequest hook
+		if cfg.Hooks != nil {
+			_ = cfg.Hooks.RunPreAPIRequest(ctx, cfg.SessionID, string(cfg.Model), len(*cfg.Messages))
+		}
+
 		// Call the streaming API
 		stream := cfg.Streamer.NewStreaming(ctx, params)
 		msg := anthropic.Message{}
@@ -203,6 +260,7 @@ func RunLoop(ctx context.Context, cfg LoopConfig) {
 					InputTokens:          inputTokens,
 					OutputTokens:         outputTokens,
 					CacheReadInputTokens: cacheRead,
+					ModelUsage:           modelUsage,
 					Errors:               []string{fmt.Sprintf("accumulate error: %s", err.Error())},
 				})
 				stream.Close()
@@ -216,26 +274,75 @@ func RunLoop(ctx context.Context, cfg LoopConfig) {
 		}
 
 		if err := stream.Err(); err != nil {
-			cfg.Sink.OnResult(ResultInfo{
-				Subtype:              "error_during_execution",
-				SessionID:            cfg.SessionID,
-				IsError:              true,
-				NumTurns:             turns,
-				DurationMs:           time.Since(startTime).Milliseconds(),
-				InputTokens:          inputTokens,
-				OutputTokens:         outputTokens,
-				CacheReadInputTokens: cacheRead,
-				Errors:               []string{fmt.Sprintf("stream error: %s", err.Error())},
-			})
-			return
-		}
-		stream.Close()
+			stream.Close()
 
-		// Track usage
+			// Retry with fallback model on overloaded/unavailable errors
+			if cfg.FallbackModel != "" && currentModel != cfg.FallbackModel && isRetryableError(err) {
+				currentModel = cfg.FallbackModel
+				params.Model = currentModel
+				msg = anthropic.Message{}
+
+				retryStream := cfg.Streamer.NewStreaming(ctx, params)
+				for retryStream.Next() {
+					event := retryStream.Current()
+					_ = msg.Accumulate(event)
+					if event.Type == "content_block_delta" && event.Delta.Type == "text_delta" && event.Delta.Text != "" {
+						cfg.Sink.OnStream(event.Delta.Text)
+					}
+				}
+				if retryErr := retryStream.Err(); retryErr != nil {
+					retryStream.Close()
+					cfg.Sink.OnResult(ResultInfo{
+						Subtype:              "error_during_execution",
+						SessionID:            cfg.SessionID,
+						IsError:              true,
+						NumTurns:             turns,
+						DurationMs:           time.Since(startTime).Milliseconds(),
+						InputTokens:          inputTokens,
+						OutputTokens:         outputTokens,
+						CacheReadInputTokens: cacheRead,
+						ModelUsage:           modelUsage,
+						Errors:               []string{fmt.Sprintf("fallback stream error: %s", retryErr.Error())},
+					})
+					return
+				}
+				retryStream.Close()
+				// Fall through to normal processing with the fallback response
+			} else {
+				cfg.Sink.OnResult(ResultInfo{
+					Subtype:              "error_during_execution",
+					SessionID:            cfg.SessionID,
+					IsError:              true,
+					NumTurns:             turns,
+					DurationMs:           time.Since(startTime).Milliseconds(),
+					InputTokens:          inputTokens,
+					OutputTokens:         outputTokens,
+					CacheReadInputTokens: cacheRead,
+					ModelUsage:           modelUsage,
+					Errors:               []string{fmt.Sprintf("stream error: %s", err.Error())},
+				})
+				return
+			}
+		} else {
+			stream.Close()
+		}
+
+		// Track usage (aggregate + per-model)
 		inputTokens += msg.Usage.InputTokens
 		outputTokens += msg.Usage.OutputTokens
 		cacheRead += msg.Usage.CacheReadInputTokens
 		cacheCreation += msg.Usage.CacheCreationInputTokens
+
+		modelKey := string(params.Model)
+		mu := modelUsage[modelKey]
+		mu.InputTokens += msg.Usage.InputTokens
+		mu.OutputTokens += msg.Usage.OutputTokens
+		modelUsage[modelKey] = mu
+
+		// PostAPIRequest hook
+		if cfg.Hooks != nil {
+			_ = cfg.Hooks.RunPostAPIRequest(ctx, cfg.SessionID, string(cfg.Model), msg.Usage.InputTokens, msg.Usage.OutputTokens)
+		}
 
 		// Record budget usage if tracker is configured
 		if cfg.Budget != nil {
@@ -258,6 +365,7 @@ func RunLoop(ctx context.Context, cfg LoopConfig) {
 					OutputTokens:             outputTokens,
 					CacheReadInputTokens:     cacheRead,
 					CacheCreationInputTokens: cacheCreation,
+					ModelUsage:               modelUsage,
 					Errors:                   []string{"budget exhausted"},
 				})
 				return
@@ -283,6 +391,7 @@ func RunLoop(ctx context.Context, cfg LoopConfig) {
 				OutputTokens:             outputTokens,
 				CacheReadInputTokens:     cacheRead,
 				CacheCreationInputTokens: cacheCreation,
+				ModelUsage:               modelUsage,
 			})
 			return
 
@@ -297,6 +406,7 @@ func RunLoop(ctx context.Context, cfg LoopConfig) {
 				InputTokens:          inputTokens,
 				OutputTokens:         outputTokens,
 				CacheReadInputTokens: cacheRead,
+				ModelUsage:           modelUsage,
 				Errors:               []string{"max_tokens reached"},
 			})
 			return
@@ -314,6 +424,7 @@ func RunLoop(ctx context.Context, cfg LoopConfig) {
 					OutputTokens:             outputTokens,
 					CacheReadInputTokens:     cacheRead,
 					CacheCreationInputTokens: cacheCreation,
+					ModelUsage:               modelUsage,
 				})
 				return
 			}
@@ -328,7 +439,13 @@ func RunLoop(ctx context.Context, cfg LoopConfig) {
 		case "compaction":
 			// Server-side compaction occurred. The API has already modified
 			// the message history. Emit compact event and continue the loop.
+			if cfg.Hooks != nil {
+				_ = cfg.Hooks.RunPreCompact(ctx, cfg.SessionID, "server")
+			}
 			cfg.Sink.OnCompact(CompactInfo{Strategy: CompactServer})
+			if cfg.Hooks != nil {
+				_ = cfg.Hooks.RunPostCompact(ctx, cfg.SessionID, "server")
+			}
 			// Continue the loop — the API will re-send with compacted context
 
 		default:
@@ -342,6 +459,7 @@ func RunLoop(ctx context.Context, cfg LoopConfig) {
 				InputTokens:          inputTokens,
 				OutputTokens:         outputTokens,
 				CacheReadInputTokens: cacheRead,
+				ModelUsage:           modelUsage,
 			})
 			return
 		}
@@ -360,6 +478,7 @@ func RunLoop(ctx context.Context, cfg LoopConfig) {
 				InputTokens:          inputTokens,
 				OutputTokens:         outputTokens,
 				CacheReadInputTokens: cacheRead,
+				ModelUsage:           modelUsage,
 				Errors:               []string{"max turns reached"},
 			})
 			return
@@ -423,8 +542,26 @@ func processToolUse(ctx context.Context, cfg LoopConfig, content []anthropic.Con
 					anthropic.NewToolResultBlock(toolUse.ID, "tool execution denied by permission policy", true))
 				continue
 			}
-			// decision == 2 (Ask) is treated as allow here — the caller should
-			// have resolved the ask before reaching the loop
+			if decision == 2 { // Ask — fire PermissionRequest hook for a decision
+				if cfg.Hooks != nil {
+					hookResult, hookErr := cfg.Hooks.RunPermissionRequest(ctx, cfg.SessionID, toolUse.Name, toolInput)
+					if hookErr != nil {
+						results = append(results,
+							anthropic.NewToolResultBlock(toolUse.ID, fmt.Sprintf("permission hook error: %s", hookErr.Error()), true))
+						continue
+					}
+					if hookResult != nil && hookResult.Block {
+						reason := hookResult.Reason
+						if reason == "" {
+							reason = "blocked by permission hook"
+						}
+						results = append(results,
+							anthropic.NewToolResultBlock(toolUse.ID, fmt.Sprintf("permission denied: %s", reason), true))
+						continue
+					}
+				}
+				// No hook or hook allowed — proceed with execution
+			}
 		}
 
 		// 3. Execute tool
@@ -451,6 +588,11 @@ func processToolUse(ctx context.Context, cfg LoopConfig, content []anthropic.Con
 
 		results = append(results,
 			anthropic.NewToolResultBlock(toolUse.ID, text, isError))
+
+		// 5. Run ToolResult hook (fires for every tool execution regardless of success/failure)
+		if cfg.Hooks != nil {
+			_ = cfg.Hooks.RunToolResult(ctx, cfg.SessionID, toolUse.Name, toolInput, text, isError)
+		}
 	}
 
 	return results
@@ -465,4 +607,14 @@ func hasOutputTool(content []anthropic.ContentBlockUnion, toolName string) bool 
 		}
 	}
 	return false
+}
+
+// isRetryableError returns true if the error indicates the model is overloaded
+// or unavailable (suitable for fallback retry).
+func isRetryableError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "overloaded") ||
+		strings.Contains(msg, "model_unavailable") ||
+		strings.Contains(msg, "529") ||
+		strings.Contains(msg, "503")
 }

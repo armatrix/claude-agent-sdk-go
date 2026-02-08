@@ -25,7 +25,7 @@ var _ agent.Tool[EditInput] = (*EditTool)(nil)
 func (t *EditTool) Name() string        { return "Edit" }
 func (t *EditTool) Description() string  { return "Perform exact string replacements in files" }
 
-func (t *EditTool) Execute(_ context.Context, input EditInput) (*agent.ToolResult, error) {
+func (t *EditTool) Execute(ctx context.Context, input EditInput) (*agent.ToolResult, error) {
 	if input.FilePath == "" {
 		return agent.ErrorResult("file_path is required"), nil
 	}
@@ -33,7 +33,14 @@ func (t *EditTool) Execute(_ context.Context, input EditInput) (*agent.ToolResul
 		return agent.ErrorResult("old_string and new_string must be different"), nil
 	}
 
-	data, err := os.ReadFile(input.FilePath)
+	resolved := resolvePath(ctx, input.FilePath)
+
+	// Sandbox: check allowed directories
+	if err := checkSandboxPath(ctx, resolved); err != nil {
+		return agent.ErrorResult(err.Error()), nil
+	}
+
+	data, err := os.ReadFile(resolved)
 	if err != nil {
 		return agent.ErrorResult(fmt.Sprintf("failed to read file: %s", err.Error())), nil
 	}
@@ -59,9 +66,9 @@ func (t *EditTool) Execute(_ context.Context, input EditInput) (*agent.ToolResul
 		newContent = strings.Replace(content, input.OldString, input.NewString, 1)
 	}
 
-	if err := os.WriteFile(input.FilePath, []byte(newContent), 0644); err != nil {
+	if err := os.WriteFile(resolved, []byte(newContent), 0644); err != nil {
 		return agent.ErrorResult(fmt.Sprintf("failed to write file: %s", err.Error())), nil
 	}
 
-	return agent.TextResult(fmt.Sprintf("Successfully replaced %d occurrence(s) in %s", count, input.FilePath)), nil
+	return agent.TextResult(fmt.Sprintf("Successfully replaced %d occurrence(s) in %s", count, resolved)), nil
 }

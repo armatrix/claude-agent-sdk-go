@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	agent "github.com/armatrix/claude-agent-sdk-go"
 )
 
 func TestBashTool_Name(t *testing.T) {
@@ -87,4 +89,29 @@ func TestBashTool_Execute_WorkingDirectory(t *testing.T) {
 	require.NoError(t, err)
 	text := extractText(result)
 	assert.Contains(t, text, dir)
+}
+
+func TestBashTool_Execute_ContextWorkDir(t *testing.T) {
+	dir := t.TempDir()
+	ctx := agent.WithContextWorkDir(context.Background(), dir)
+	tool := &BashTool{}
+	result, err := tool.Execute(ctx, BashInput{
+		Command: "pwd",
+	})
+	require.NoError(t, err)
+	text := extractText(result)
+	assert.Contains(t, text, dir)
+}
+
+func TestBashTool_Execute_ContextEnv(t *testing.T) {
+	ctx := agent.WithContextEnv(context.Background(), map[string]string{
+		"MY_TEST_VAR": "hello_from_context",
+	})
+	tool := &BashTool{}
+	result, err := tool.Execute(ctx, BashInput{
+		Command: "echo $MY_TEST_VAR",
+	})
+	require.NoError(t, err)
+	text := extractText(result)
+	assert.Contains(t, text, "hello_from_context")
 }

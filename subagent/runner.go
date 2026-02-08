@@ -56,6 +56,14 @@ type Runner struct {
 	active  map[string]*runHandle
 	mu      sync.RWMutex
 	runFunc RunFunc
+
+	// OnStart is called when a sub-agent is spawned (agentName, runID).
+	// Set by the parent agent to fire SubagentStart hooks.
+	OnStart func(agentName, runID string)
+
+	// OnStop is called when a sub-agent completes (agentName, runID).
+	// Set by the parent agent to fire SubagentStop hooks.
+	OnStop func(agentName, runID string)
 }
 
 // NewRunner creates a Runner with the given sub-agent definitions.
@@ -107,7 +115,13 @@ func (r *Runner) Spawn(ctx context.Context, name, prompt string) (string, error)
 
 	go func() {
 		defer cancel()
+		if r.OnStart != nil {
+			r.OnStart(name, runID)
+		}
 		result := r.runFunc(childCtx, childAgent, prompt)
+		if r.OnStop != nil {
+			r.OnStop(name, runID)
+		}
 		resultCh <- result
 	}()
 

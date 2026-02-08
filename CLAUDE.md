@@ -28,21 +28,24 @@ Root package (package agent):
   errors.go       → Sentinel errors
 
 Public sub-packages (user-facing):
-  hook/             → Hook types + 12 event constants
-  permission/       → Permission types + checker
+  hook/             → Hook types + 16 event constants
+  permission/       → Permission types + checker + declarative rules
   session/          → SessionStore implementations (FileStore, MemoryStore)
   tools/            → Built-in tools (Read, Write, Edit, Bash, Glob, Grep, ...)
                       + Task tool (subagent), MCP resource tools, 7 Teams tools
+                      + ToolSearch meta-tool
   subagent/         → Parent→child agent delegation (Definition, Runner)
-  mcp/              → MCP client (Transport, Manager, Bridge, Resource)
+  mcp/              → MCP client (Transport, Manager, Bridge, Resource, SDKServer)
   teams/            → Multi-agent collaboration with 6 topology modes
+  checkpoint/       → File change tracking + rewind
+  plugin/           → Plugin loading (commands, agents, MCP servers, skills)
 
 Internal packages (hidden from external consumers):
-  internal/engine/      → Agent loop, compaction (core execution)
+  internal/engine/      → Agent loop, compaction, fallback retry (core execution)
   internal/budget/      → BudgetTracker with decimal.Decimal
   internal/hookrunner/  → Hook execution engine
   internal/schema/      → JSON Schema generation from Go structs
-  internal/config/      → Settings/Skills loading (Phase 2)
+  internal/config/      → Settings, Skills, Presets, Slash Commands loading
   internal/testutil/    → Shared test helpers
 
   examples/ → Example programs

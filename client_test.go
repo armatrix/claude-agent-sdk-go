@@ -10,6 +10,8 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/armatrix/claude-agent-sdk-go/permission"
 )
 
 // --- NewClient ---
@@ -64,6 +66,19 @@ func TestClient_SetModel(t *testing.T) {
 
 	c.SetModel(anthropic.ModelClaudeSonnet4_5)
 	assert.Equal(t, anthropic.ModelClaudeSonnet4_5, c.Agent().Model())
+}
+
+// --- SetMaxThinkingTokens ---
+
+func TestClient_SetMaxThinkingTokens(t *testing.T) {
+	c := NewClient()
+	assert.Equal(t, int64(0), c.Agent().Options().maxThinkingTokens)
+
+	c.SetMaxThinkingTokens(10000)
+	assert.Equal(t, int64(10000), c.Agent().Options().maxThinkingTokens)
+
+	c.SetMaxThinkingTokens(0) // disable
+	assert.Equal(t, int64(0), c.Agent().Options().maxThinkingTokens)
 }
 
 // --- Fork ---
@@ -195,6 +210,40 @@ func TestClient_Interrupt_CancelsContext(t *testing.T) {
 	assert.Error(t, ctx.Err())
 }
 
+// --- InterruptAndContinue ---
+
+func TestClient_InterruptAndContinue_PreservesSession(t *testing.T) {
+	c := NewClient()
+	c.session.Messages = append(c.session.Messages,
+		anthropic.NewUserMessage(anthropic.NewTextBlock("hello")))
+
+	// Set up a cancel like Query would
+	_, cancel := context.WithCancel(context.Background())
+	c.mu.Lock()
+	c.cancel = cancel
+	c.mu.Unlock()
+
+	c.InterruptAndContinue()
+
+	// Session should still have messages
+	assert.Len(t, c.session.Messages, 1)
+	assert.Nil(t, c.cancel)
+}
+
+func TestClient_InterruptAndContinue_NilCancel(t *testing.T) {
+	c := NewClient()
+	// Should not panic
+	c.InterruptAndContinue()
+}
+
+// --- SetPermissionMode ---
+
+func TestClient_SetPermissionMode(t *testing.T) {
+	c := NewClient()
+	c.SetPermissionMode(permission.ModeBypassPermissions)
+	assert.Equal(t, permission.ModeBypassPermissions, c.Agent().Options().permissionMode)
+}
+
 // --- Concurrent safety ---
 
 func TestClient_ConcurrentSetModel(t *testing.T) {
@@ -285,4 +334,62 @@ func (s *recordingStore) Delete(_ context.Context, id string) error {
 		delete(s.sessions, id)
 	}
 	return nil
+}
+
+// --- ContinueLatest ---
+
+// listableStore is a test store that implements SessionLister.
+type listableStore struct {
+	recordingStore
+}
+
+func (s *listableStore) List(_ context.Context) ([]*Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var sessions []*Session
+	for _, sess := range s.sessions {
+		sessions = append(sessions, sess)
+	}
+	return sessions, nil
+}
+
+func TestClient_ContinueLatest_LoadsLatest(t *testing.T) {
+	store := &listableStore{recordingStore: recordingStore{sessions: make(map[string]*Session)}}
+
+	// Create two sessions with different timestamps
+	old := NewSession()
+	old.ID = "old"
+	old.UpdatedAt = time.Now().Add(-1 * time.Hour)
+	store.sessions["old"] = old
+
+	recent := NewSession()
+	recent.ID = "recent"
+	recent.UpdatedAt = time.Now()
+	store.sessions["recent"] = recent
+
+	c := NewClient(WithSessionStore(store))
+	err := c.ContinueLatest(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, "recent", c.Session().ID)
+}
+
+func TestClient_ContinueLatest_NoStore(t *testing.T) {
+	c := NewClient()
+	err := c.ContinueLatest(context.Background())
+	assert.ErrorIs(t, err, ErrNoSessionStore)
+}
+
+func TestClient_ContinueLatest_NotListable(t *testing.T) {
+	store := &recordingStore{}
+	c := NewClient(WithSessionStore(store))
+	err := c.ContinueLatest(context.Background())
+	assert.ErrorIs(t, err, ErrStoreNotListable)
+}
+
+func TestClient_ContinueLatest_NoSessions(t *testing.T) {
+	store := &listableStore{recordingStore: recordingStore{sessions: make(map[string]*Session)}}
+	c := NewClient(WithSessionStore(store))
+	err := c.ContinueLatest(context.Background())
+	assert.ErrorIs(t, err, ErrNoSessions)
 }

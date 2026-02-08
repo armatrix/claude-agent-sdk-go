@@ -94,6 +94,136 @@ func (r *Runner) RunStop(ctx context.Context, sessionID string) error {
 	return err
 }
 
+// RunSessionStart runs all matching SessionStart hooks.
+func (r *Runner) RunSessionStart(ctx context.Context, sessionID string) error {
+	_, err := r.run(ctx, pubhook.SessionStart, sessionID, "", &pubhook.Input{
+		SessionID: sessionID,
+		Event:     pubhook.SessionStart,
+	})
+	return err
+}
+
+// RunSessionEnd runs all matching SessionEnd hooks.
+func (r *Runner) RunSessionEnd(ctx context.Context, sessionID string) error {
+	_, err := r.run(ctx, pubhook.SessionEnd, sessionID, "", &pubhook.Input{
+		SessionID: sessionID,
+		Event:     pubhook.SessionEnd,
+	})
+	return err
+}
+
+// RunPreCompact runs all matching PreCompact hooks.
+func (r *Runner) RunPreCompact(ctx context.Context, sessionID, strategy string) error {
+	_, err := r.run(ctx, pubhook.PreCompact, sessionID, "", &pubhook.Input{
+		SessionID:       sessionID,
+		Event:           pubhook.PreCompact,
+		CompactStrategy: strategy,
+	})
+	return err
+}
+
+// RunPostCompact runs all matching PostCompact hooks.
+func (r *Runner) RunPostCompact(ctx context.Context, sessionID, strategy string) error {
+	_, err := r.run(ctx, pubhook.PostCompact, sessionID, "", &pubhook.Input{
+		SessionID:       sessionID,
+		Event:           pubhook.PostCompact,
+		CompactStrategy: strategy,
+	})
+	return err
+}
+
+// RunPreAPIRequest runs all matching PreAPIRequest hooks.
+func (r *Runner) RunPreAPIRequest(ctx context.Context, sessionID, model string, messageCount int) error {
+	_, err := r.run(ctx, pubhook.PreAPIRequest, sessionID, "", &pubhook.Input{
+		SessionID:    sessionID,
+		Event:        pubhook.PreAPIRequest,
+		Model:        model,
+		MessageCount: messageCount,
+	})
+	return err
+}
+
+// RunPostAPIRequest runs all matching PostAPIRequest hooks.
+func (r *Runner) RunPostAPIRequest(ctx context.Context, sessionID, model string, inputTokens, outputTokens int64) error {
+	_, err := r.run(ctx, pubhook.PostAPIRequest, sessionID, "", &pubhook.Input{
+		SessionID:    sessionID,
+		Event:        pubhook.PostAPIRequest,
+		Model:        model,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+	})
+	return err
+}
+
+// RunToolResult runs all matching ToolResult hooks.
+func (r *Runner) RunToolResult(ctx context.Context, sessionID, toolName string, input json.RawMessage, output string, isError bool) error {
+	inp := &pubhook.Input{
+		SessionID:  sessionID,
+		Event:      pubhook.ToolResult,
+		ToolName:   toolName,
+		ToolInput:  input,
+		ToolOutput: output,
+	}
+	if isError {
+		inp.ToolError = fmt.Errorf("%s", output)
+	}
+	_, err := r.run(ctx, pubhook.ToolResult, sessionID, toolName, inp)
+	return err
+}
+
+// RunNotification runs all matching Notification hooks.
+func (r *Runner) RunNotification(ctx context.Context, sessionID, notifType string, payload json.RawMessage) error {
+	_, err := r.run(ctx, pubhook.Notification, sessionID, "", &pubhook.Input{
+		SessionID:        sessionID,
+		Event:            pubhook.Notification,
+		NotificationType: notifType,
+		Payload:          payload,
+	})
+	return err
+}
+
+// RunUserPromptSubmit runs hooks before user prompt is added to session.
+// Returns the (possibly modified) prompt via Result.
+func (r *Runner) RunUserPromptSubmit(ctx context.Context, sessionID, prompt string) (*pubhook.Result, error) {
+	return r.run(ctx, pubhook.UserPromptSubmit, sessionID, "", &pubhook.Input{
+		SessionID: sessionID,
+		Event:     pubhook.UserPromptSubmit,
+		Prompt:    prompt,
+	})
+}
+
+// RunSubagentStart runs hooks when a sub-agent is spawned.
+func (r *Runner) RunSubagentStart(ctx context.Context, sessionID, agentName, runID string) error {
+	_, err := r.run(ctx, pubhook.SubagentStart, sessionID, "", &pubhook.Input{
+		SessionID: sessionID,
+		Event:     pubhook.SubagentStart,
+		AgentName: agentName,
+		RunID:     runID,
+	})
+	return err
+}
+
+// RunSubagentStop runs hooks when a sub-agent completes.
+func (r *Runner) RunSubagentStop(ctx context.Context, sessionID, agentName, runID string) error {
+	_, err := r.run(ctx, pubhook.SubagentStop, sessionID, "", &pubhook.Input{
+		SessionID: sessionID,
+		Event:     pubhook.SubagentStop,
+		AgentName: agentName,
+		RunID:     runID,
+	})
+	return err
+}
+
+// RunPermissionRequest runs hooks when a tool execution triggers a permission check.
+func (r *Runner) RunPermissionRequest(ctx context.Context, sessionID, toolName string, input json.RawMessage) (*pubhook.Result, error) {
+	return r.run(ctx, pubhook.PermissionRequest, sessionID, toolName, &pubhook.Input{
+		SessionID: sessionID,
+		Event:     pubhook.PermissionRequest,
+		ToolName:  toolName,
+		ToolInput: input,
+	})
+}
+
 // run is the internal dispatcher.
 func (r *Runner) run(ctx context.Context, event pubhook.Event, sessionID, toolName string, input *pubhook.Input) (*pubhook.Result, error) {
 	var combined *pubhook.Result

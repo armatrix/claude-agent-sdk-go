@@ -40,6 +40,11 @@ func (t *BashTool) Execute(ctx context.Context, input BashInput) (*agent.ToolRes
 		return agent.ErrorResult("command is required"), nil
 	}
 
+	// Sandbox: check blocked commands
+	if err := checkSandboxCommand(ctx, input.Command); err != nil {
+		return agent.ErrorResult(err.Error()), nil
+	}
+
 	timeoutMs := defaultBashTimeoutMs
 	if input.Timeout != nil {
 		timeoutMs = *input.Timeout
@@ -56,6 +61,7 @@ func (t *BashTool) Execute(ctx context.Context, input BashInput) (*agent.ToolRes
 	defer cancel()
 
 	cmd := exec.CommandContext(cmdCtx, "bash", "-c", input.Command)
+	applyExecContext(ctx, cmd)
 
 	// Use PTY for more realistic output capture
 	ptmx, err := pty.Start(cmd)
@@ -100,6 +106,7 @@ func (t *BashTool) Execute(ctx context.Context, input BashInput) (*agent.ToolRes
 
 func (t *BashTool) executeWithoutPTY(ctx context.Context, command string) (*agent.ToolResult, error) {
 	cmd := exec.CommandContext(ctx, "bash", "-c", command)
+	applyExecContext(ctx, cmd)
 	output, err := cmd.CombinedOutput()
 
 	text := string(output)

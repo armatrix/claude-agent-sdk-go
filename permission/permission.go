@@ -48,7 +48,8 @@ var WriteTools = map[string]bool{
 // Checker evaluates whether a tool can be used.
 type Checker struct {
 	mode       Mode
-	canUseTool Func // Optional user-provided callback, overrides mode-based check
+	rules      []Rule // Declarative rules evaluated before callback and mode
+	canUseTool Func   // Optional user-provided callback, overrides mode-based check
 }
 
 // NewChecker creates a permission checker with the given mode.
@@ -56,10 +57,29 @@ func NewChecker(mode Mode, canUseTool Func) *Checker {
 	return &Checker{mode: mode, canUseTool: canUseTool}
 }
 
+// NewCheckerWithRules creates a permission checker with declarative rules.
+// Rules are evaluated first; if no rule matches, canUseTool is tried,
+// then mode-based defaults apply.
+func NewCheckerWithRules(mode Mode, rules []Rule, canUseTool Func) *Checker {
+	return &Checker{mode: mode, rules: rules, canUseTool: canUseTool}
+}
+
 // Check evaluates whether the named tool with the given input is allowed.
 // Returns Allow (0), Deny (1), or Ask (2).
+//
+// Evaluation order:
+//  1. Declarative rules (if any match, return immediately)
+//  2. canUseTool callback (if provided)
+//  3. Mode-based defaults
 func (c *Checker) Check(ctx context.Context, toolName string, input json.RawMessage) (Decision, error) {
-	// If user provided a callback, use it first
+	// Evaluate declarative rules first
+	if len(c.rules) > 0 {
+		if d, matched := MatchRules(c.rules, toolName); matched {
+			return d, nil
+		}
+	}
+
+	// If user provided a callback, use it
 	if c.canUseTool != nil {
 		return c.canUseTool(ctx, toolName, input)
 	}

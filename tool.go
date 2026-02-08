@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -160,4 +161,30 @@ func (r *ToolRegistry) Names() []string {
 	names := make([]string, len(r.order))
 	copy(names, r.order)
 	return names
+}
+
+// ToolSearchMatch represents a tool found by search.
+type ToolSearchMatch struct {
+	Name        string
+	Description string
+}
+
+// Search finds tools whose name or description contains the query (case-insensitive).
+func (r *ToolRegistry) Search(query string) []ToolSearchMatch {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	q := strings.ToLower(query)
+	var matches []ToolSearchMatch
+	for _, name := range r.order {
+		entry := r.tools[name]
+		if strings.Contains(strings.ToLower(entry.name), q) ||
+			strings.Contains(strings.ToLower(entry.description), q) {
+			matches = append(matches, ToolSearchMatch{
+				Name:        entry.name,
+				Description: entry.description,
+			})
+		}
+	}
+	return matches
 }
