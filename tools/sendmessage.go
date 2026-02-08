@@ -22,6 +22,11 @@ type SendMessageTool struct {
 
 var _ agent.Tool[SendMessageInput] = (*SendMessageTool)(nil)
 
+// NewSendMessageTool creates a SendMessageTool for the given member.
+func NewSendMessageTool(bus *teams.MessageBus, senderName string) *SendMessageTool {
+	return &SendMessageTool{Bus: bus, SenderName: senderName}
+}
+
 func (t *SendMessageTool) Name() string { return "SendMessage" }
 func (t *SendMessageTool) Description() string {
 	return "Send a direct message to a specific team member"

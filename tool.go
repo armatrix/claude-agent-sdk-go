@@ -93,6 +93,28 @@ func RegisterTool[T any](r *ToolRegistry, tool Tool[T]) {
 	r.tools[entry.name] = entry
 }
 
+// RegisterRaw registers a tool with a pre-built schema and execute function.
+// This is used by MCP bridged tools and other dynamic tool sources that
+// don't use the generic Tool[T] interface.
+func (r *ToolRegistry) RegisterRaw(
+	name, description string,
+	inputSchema anthropic.ToolInputSchemaParam,
+	execute func(ctx context.Context, raw json.RawMessage) (*ToolResult, error),
+) {
+	entry := &toolEntry{
+		name:        name,
+		description: description,
+		schema:      inputSchema,
+		execute:     execute,
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.tools[name]; !exists {
+		r.order = append(r.order, name)
+	}
+	r.tools[name] = entry
+}
+
 // Execute runs a tool by name with the given raw JSON input.
 func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawMessage) (*ToolResult, error) {
 	r.mu.RLock()

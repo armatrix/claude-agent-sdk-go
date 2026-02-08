@@ -23,6 +23,11 @@ type TaskUpdateTool struct {
 
 var _ agent.Tool[TaskUpdateInput] = (*TaskUpdateTool)(nil)
 
+// NewTaskUpdateTool creates a TaskUpdateTool for the given task list.
+func NewTaskUpdateTool(tasks *teams.SharedTaskList) *TaskUpdateTool {
+	return &TaskUpdateTool{Tasks: tasks}
+}
+
 func (t *TaskUpdateTool) Name() string { return "TaskUpdate" }
 func (t *TaskUpdateTool) Description() string {
 	return "Update an existing task's status, owner, or subject"

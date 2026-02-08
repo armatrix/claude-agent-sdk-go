@@ -22,6 +22,11 @@ type ShutdownRequestTool struct {
 
 var _ agent.Tool[ShutdownRequestInput] = (*ShutdownRequestTool)(nil)
 
+// NewShutdownRequestTool creates a ShutdownRequestTool for the given member.
+func NewShutdownRequestTool(bus *teams.MessageBus, senderName string) *ShutdownRequestTool {
+	return &ShutdownRequestTool{Bus: bus, SenderName: senderName}
+}
+
 func (t *ShutdownRequestTool) Name() string { return "ShutdownRequest" }
 func (t *ShutdownRequestTool) Description() string {
 	return "Request a team member to gracefully shut down"

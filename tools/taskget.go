@@ -21,6 +21,11 @@ type TaskGetTool struct {
 
 var _ agent.Tool[TaskGetInput] = (*TaskGetTool)(nil)
 
+// NewTaskGetTool creates a TaskGetTool for the given task list.
+func NewTaskGetTool(tasks *teams.SharedTaskList) *TaskGetTool {
+	return &TaskGetTool{Tasks: tasks}
+}
+
 func (t *TaskGetTool) Name() string { return "TaskGet" }
 func (t *TaskGetTool) Description() string {
 	return "Get details of a specific task by ID"

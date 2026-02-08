@@ -19,6 +19,11 @@ type TaskListTool struct {
 
 var _ agent.Tool[TaskListInput] = (*TaskListTool)(nil)
 
+// NewTaskListTool creates a TaskListTool for the given task list.
+func NewTaskListTool(tasks *teams.SharedTaskList) *TaskListTool {
+	return &TaskListTool{Tasks: tasks}
+}
+
 func (t *TaskListTool) Name() string { return "TaskList" }
 func (t *TaskListTool) Description() string {
 	return "List all tasks in the shared task list with their status"

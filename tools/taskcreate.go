@@ -21,6 +21,11 @@ type TaskCreateTool struct {
 
 var _ agent.Tool[TaskCreateInput] = (*TaskCreateTool)(nil)
 
+// NewTaskCreateTool creates a TaskCreateTool for the given task list.
+func NewTaskCreateTool(tasks *teams.SharedTaskList) *TaskCreateTool {
+	return &TaskCreateTool{Tasks: tasks}
+}
+
 func (t *TaskCreateTool) Name() string { return "TaskCreate" }
 func (t *TaskCreateTool) Description() string {
 	return "Create a new task in the shared task list"

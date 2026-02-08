@@ -21,6 +21,11 @@ type BroadcastTool struct {
 
 var _ agent.Tool[BroadcastInput] = (*BroadcastTool)(nil)
 
+// NewBroadcastTool creates a BroadcastTool for the given member.
+func NewBroadcastTool(bus *teams.MessageBus, senderName string) *BroadcastTool {
+	return &BroadcastTool{Bus: bus, SenderName: senderName}
+}
+
 func (t *BroadcastTool) Name() string { return "Broadcast" }
 func (t *BroadcastTool) Description() string {
 	return "Broadcast a message to all team members"
