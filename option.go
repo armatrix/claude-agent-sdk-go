@@ -3,6 +3,9 @@ package agent
 import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/shopspring/decimal"
+
+	"github.com/armatrix/claude-agent-sdk-go/hook"
+	"github.com/armatrix/claude-agent-sdk-go/permission"
 )
 
 // AgentOption configures an Agent via the functional options pattern.
@@ -40,9 +43,31 @@ type agentOptions struct {
 	compact         CompactConfig
 	streamBufferSize int
 
-	// Tool configuration (wired in Task 2).
+	// System prompt injected before conversation.
+	systemPrompt string
+
+	// Tool configuration.
 	builtinTools  []string
 	disabledTools []string
+
+	// Session store for persistence.
+	sessionStore SessionStore
+
+	// Structured output format. Zero value means no structured output.
+	outputFormat *OutputFormat
+
+	// Settings file paths for merged configuration loading.
+	settingSources []string
+
+	// Skill directory paths for loading .md skill files.
+	skillDirs []string
+
+	// Hook matchers for pre/post tool use callbacks.
+	hookMatchers []hook.Matcher
+
+	// Permission mode and optional callback for tool access control.
+	permissionMode permission.Mode
+	permissionFunc permission.Func
 }
 
 // applyDefaults fills in zero-value fields with sensible defaults.
@@ -139,4 +164,84 @@ func WithBuiltinTools(names ...string) AgentOption {
 // WithDisabledTools disables specific tools by name.
 func WithDisabledTools(names ...string) AgentOption {
 	return func(o *agentOptions) { o.disabledTools = names }
+}
+
+// --- System Prompt ---
+
+// WithSystemPrompt sets the system prompt for the agent.
+// The system prompt is sent as the first system message in every API call.
+func WithSystemPrompt(prompt string) AgentOption {
+	return func(o *agentOptions) { o.systemPrompt = prompt }
+}
+
+// --- Session ---
+
+// WithSessionStore sets a session store for persistence.
+func WithSessionStore(store SessionStore) AgentOption {
+	return func(o *agentOptions) { o.sessionStore = store }
+}
+
+// --- Structured Output ---
+
+// WithOutputFormat sets a structured output format.
+// The agent will inject a hidden tool and force tool_choice to extract structured data.
+func WithOutputFormat(format OutputFormat) AgentOption {
+	return func(o *agentOptions) { o.outputFormat = &format }
+}
+
+// WithOutputFormatType creates and sets a structured output format from a Go struct type.
+func WithOutputFormatType[T any](name string) AgentOption {
+	format := NewOutputFormatType[T](name)
+	return func(o *agentOptions) { o.outputFormat = &format }
+}
+
+// --- Accessors (for inspection/testing) ---
+
+// SystemPromptText returns the configured system prompt text.
+func (o agentOptions) SystemPromptText() string { return o.systemPrompt }
+
+// MaxTurnsValue returns the configured max turns.
+func (o agentOptions) MaxTurnsValue() int { return o.maxTurns }
+
+// OutputFormatName returns the structured output tool name, or empty if not set.
+func (o agentOptions) OutputFormatName() string {
+	if o.outputFormat != nil {
+		return o.outputFormat.Name
+	}
+	return ""
+}
+
+// --- Settings & Skills ---
+
+// WithSettingSources sets JSON file paths for loading merged settings.
+// Later paths override earlier ones (user < project < local).
+func WithSettingSources(paths ...string) AgentOption {
+	return func(o *agentOptions) { o.settingSources = paths }
+}
+
+// WithSkillDirs sets directories to scan for .md skill files.
+// Skills are prepended to the system prompt.
+func WithSkillDirs(dirs ...string) AgentOption {
+	return func(o *agentOptions) { o.skillDirs = dirs }
+}
+
+// --- Hooks ---
+
+// WithHooks registers hook matchers that fire at various points during execution.
+// Hooks can observe, modify, or block tool execution.
+func WithHooks(matchers ...hook.Matcher) AgentOption {
+	return func(o *agentOptions) { o.hookMatchers = matchers }
+}
+
+// --- Permissions ---
+
+// WithPermissionMode sets the permission mode for tool access control.
+func WithPermissionMode(mode permission.Mode) AgentOption {
+	return func(o *agentOptions) { o.permissionMode = mode }
+}
+
+// WithPermissionFunc sets a custom permission callback for tool access control.
+// When set, this function is called instead of the mode-based default behavior.
+func WithPermissionFunc(fn permission.Func) AgentOption {
+	return func(o *agentOptions) { o.permissionFunc = fn }
 }

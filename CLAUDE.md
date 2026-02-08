@@ -10,27 +10,41 @@ Pure Go implementation of the Claude Agent SDK. No Claude Code binary dependency
 
 ## Architecture
 
-```
-Public API (root package):
-  agent.go      → Agent (stateless execution engine)
-  client.go     → Client (stateful session container)
-  option.go     → Functional Options (WithXxx)
-  event.go      → Event types for streaming
-  stream.go     → AgentStream iterator
-  tool.go       → Tool[T] generic interface + ToolRegistry
-  defaults.go   → Configurable constants
+Flat sub-package layout. Root defines interfaces, sub-packages provide implementations.
+Dependency flows one-way: sub-package → root. Full design: `docs/plans/2026-02-08-directory-restructure.md`
 
-Internal implementation:
-  internal/agent/     → Agent loop, compaction
-  internal/budget/    → BudgetTracker with decimal.Decimal
-  internal/builtin/   → Built-in tools (Read, Write, Edit, Bash, Glob, Grep)
-  internal/hooks/     → Hook engine (Phase 2)
-  internal/session/   → Session store implementations (Phase 2)
-  internal/teams/     → Agent Teams (Phase 4)
-  internal/mcp/       → MCP client (Phase 3)
-  internal/permission/ → Permission system (Phase 2)
-  internal/config/    → Settings/Skills loading (Phase 2)
-  internal/schema/    → JSON Schema generation from Go structs
+```
+Root package (package agent):
+  agent.go        → Agent (stateless execution engine)
+  client.go       → Client (stateful session container)
+  session.go      → Session struct + SessionStore interface
+  session_ext.go  → Clone, SessionLister, SessionForker, FullSessionStore
+  stream.go       → AgentStream iterator
+  event.go        → Event types for streaming
+  tool.go         → Tool[T] generic interface + ToolRegistry
+  output.go       → OutputFormat, structured output extraction
+  option.go       → Functional Options (WithXxx)
+  defaults.go     → Configurable constants
+  errors.go       → Sentinel errors
+
+Public sub-packages (user-facing):
+  hook/             → Hook types + 12 event constants
+  permission/       → Permission types + checker
+  session/          → SessionStore implementations (FileStore, MemoryStore)
+  tools/            → Built-in tools (Read, Write, Edit, Bash, Glob, Grep, ...)
+
+Internal packages (hidden from external consumers):
+  internal/engine/      → Agent loop, compaction (core execution)
+  internal/budget/      → BudgetTracker with decimal.Decimal
+  internal/hookrunner/  → Hook execution engine
+  internal/schema/      → JSON Schema generation from Go structs
+  internal/config/      → Settings/Skills loading (Phase 2)
+  internal/testutil/    → Shared test helpers
+
+Future:
+  teams/    → Agent Teams (Phase 4)
+  mcp/      → MCP client (Phase 3)
+  examples/ → Example programs
 ```
 
 ## Key Design Decisions
@@ -40,7 +54,8 @@ Internal implementation:
 3. **Agent = stateless, Client = stateful** — Agent holds config, Client holds session
 4. **decimal.Decimal for costs** — never float64 for money/budget
 5. **Server-side compaction first** — use API `context_management.edits`, client-side as fallback
-6. **internal/ for implementation** — root package only exposes user-facing API
+6. **Flat sub-packages** — public sub-packages (`session/`, `tools/`, `hook/`, `permission/`) for user-extensible features; `internal/` for implementation details. Go's module-scoped `internal/` visibility allows public sub-packages to import `internal/` within the same module.
+7. **One-way dependency** — sub-packages → root (never circular). Root defines interfaces, sub-packages implement them. User wires via functional options.
 
 ## Coding Style
 
@@ -54,9 +69,10 @@ Internal implementation:
 
 Full design: `/Users/aaron/PKM/10-Projects/Claude-Agent-Go/26-02-08-Claude-Agent-SDK-Go-架构设计.md`
 
-## Phase 1 Plan
+## Plans
 
-See: `docs/plans/2026-02-08-phase1-minimal-agent.md`
+- Phase 1 (Minimal Agent): `docs/plans/2026-02-08-phase1-minimal-agent.md`
+- Directory Restructure: `docs/plans/2026-02-08-directory-restructure.md`
 
 ## Commands
 

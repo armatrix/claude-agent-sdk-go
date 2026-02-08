@@ -5,13 +5,16 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	agent "github.com/armatrix/claude-agent-sdk-go"
-	"github.com/armatrix/claude-agent-sdk-go/internal/builtin"
+	"github.com/armatrix/claude-agent-sdk-go/session"
+	"github.com/armatrix/claude-agent-sdk-go/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
 
 // TestIntegration_FullAgentRun_WithAPI performs a real API call.
 // Requires ANTHROPIC_API_KEY environment variable.
@@ -27,7 +30,7 @@ func TestIntegration_FullAgentRun_WithAPI(t *testing.T) {
 	)
 
 	// Register builtin tools
-	builtin.RegisterAll(a.Tools())
+	tools.RegisterAll(a.Tools())
 
 	ctx := context.Background()
 	stream := a.Run(ctx, "Read the file go.mod in the current directory and tell me the module name. Reply with ONLY the module name, nothing else.")
@@ -142,7 +145,7 @@ func TestIntegration_StreamIterator(t *testing.T) {
 func TestIntegration_AgentWithTools(t *testing.T) {
 	a := agent.NewAgent()
 
-	builtin.RegisterAll(a.Tools())
+	tools.RegisterAll(a.Tools())
 
 	names := a.Tools().Names()
 	assert.Contains(t, names, "Read")
@@ -172,4 +175,165 @@ func TestIntegration_DefaultOptions(t *testing.T) {
 	// Custom model overrides default
 	a2 := agent.NewAgent(agent.WithModel(anthropic.ModelClaudeHaiku4_5_20251001))
 	assert.Equal(t, anthropic.ModelClaudeHaiku4_5_20251001, a2.Model())
+}
+
+// --- Phase 2 Integration Tests ---
+
+// TestIntegration_SystemPromptOption verifies system prompt is wired through.
+func TestIntegration_SystemPromptOption(t *testing.T) {
+	a := agent.NewAgent(
+		agent.WithSystemPrompt("You are a pirate. Always respond in pirate speak."),
+	)
+	require.NotNil(t, a)
+	assert.Equal(t, "You are a pirate. Always respond in pirate speak.", a.Options().SystemPromptText())
+}
+
+// TestIntegration_SessionStore verifies session store wiring.
+func TestIntegration_SessionStore(t *testing.T) {
+	store := session.NewMemoryStore()
+
+	client := agent.NewClient(
+		agent.WithSessionStore(store),
+		agent.WithMaxTurns(1),
+	)
+	defer client.Close()
+
+	// Session should be accessible
+	session := client.Session()
+	assert.NotNil(t, session)
+	assert.NotEmpty(t, session.ID)
+}
+
+// TestIntegration_SettingsLoading verifies settings from files are applied.
+func TestIntegration_SettingsLoading(t *testing.T) {
+	dir := t.TempDir()
+	settingsFile := dir + "/settings.json"
+	require.NoError(t, os.WriteFile(settingsFile, []byte(`{"maxTurns":42}`), 0o644))
+
+	a := agent.NewAgent(agent.WithSettingSources(settingsFile))
+	assert.Equal(t, 42, a.Options().MaxTurnsValue())
+}
+
+// TestIntegration_SkillsLoading verifies skills directories are loaded and prepended.
+func TestIntegration_SkillsLoading(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(dir+"/greet.md", []byte("Always greet the user warmly."), 0o644))
+
+	a := agent.NewAgent(
+		agent.WithSystemPrompt("Base instructions"),
+		agent.WithSkillDirs(dir),
+	)
+
+	prompt := a.Options().SystemPromptText()
+	assert.Contains(t, prompt, "Always greet the user warmly.")
+	assert.Contains(t, prompt, "Base instructions")
+}
+
+// TestIntegration_MemoryStoreRoundTrip verifies memory store save/load.
+func TestIntegration_MemoryStoreRoundTrip(t *testing.T) {
+	store := session.NewMemoryStore()
+	ctx := context.Background()
+
+	session := agent.NewSession()
+	session.Messages = append(session.Messages,
+		anthropic.NewUserMessage(anthropic.NewTextBlock("hello")))
+
+	require.NoError(t, store.Save(ctx, session))
+
+	loaded, err := store.Load(ctx, session.ID)
+	require.NoError(t, err)
+	assert.Equal(t, session.ID, loaded.ID)
+	assert.Len(t, loaded.Messages, 1)
+}
+
+// TestIntegration_FileStoreRoundTrip verifies file store save/load.
+func TestIntegration_FileStoreRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	store, err := session.NewFileStore(dir)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	session := agent.NewSession()
+	session.Messages = append(session.Messages,
+		anthropic.NewUserMessage(anthropic.NewTextBlock("test")))
+
+	require.NoError(t, store.Save(ctx, session))
+
+	loaded, err := store.Load(ctx, session.ID)
+	require.NoError(t, err)
+	assert.Equal(t, session.ID, loaded.ID)
+	assert.Len(t, loaded.Messages, 1)
+}
+
+// TestIntegration_SessionClone verifies session forking.
+func TestIntegration_SessionClone(t *testing.T) {
+	session := agent.NewSession()
+	session.Messages = append(session.Messages,
+		anthropic.NewUserMessage(anthropic.NewTextBlock("original")))
+
+	// Small sleep to ensure different timestamp-based ID
+	time.Sleep(time.Millisecond)
+	clone := session.Clone()
+
+	// Different IDs
+	assert.NotEqual(t, session.ID, clone.ID)
+	// Same message count
+	assert.Len(t, clone.Messages, 1)
+	// Modifying clone doesn't affect original
+	clone.Messages = append(clone.Messages,
+		anthropic.NewUserMessage(anthropic.NewTextBlock("added")))
+	assert.Len(t, session.Messages, 1)
+	assert.Len(t, clone.Messages, 2)
+}
+
+// TestIntegration_OutputFormatOption verifies structured output option wiring.
+func TestIntegration_OutputFormatOption(t *testing.T) {
+	type Response struct {
+		Summary string `json:"summary" jsonschema:"required"`
+		Score   int    `json:"score" jsonschema:"required"`
+	}
+
+	a := agent.NewAgent(
+		agent.WithOutputFormatType[Response]("analysis_output"),
+	)
+
+	require.NotNil(t, a.Options().OutputFormatName())
+	assert.Equal(t, "analysis_output", a.Options().OutputFormatName())
+}
+
+// TestIntegration_ConfigurableBuiltinTools verifies extended tool registration.
+func TestIntegration_ConfigurableBuiltinTools(t *testing.T) {
+	a := agent.NewAgent()
+	tools.RegisterAll(a.Tools())
+
+	// Register configurable tools
+	tools.RegisterConfigurable(a.Tools(), tools.BuiltinOptions{
+		AskCallback: func(ctx context.Context, question string, options []tools.AskOption) (string, error) {
+			return "yes", nil
+		},
+		PlanCallback: func(ctx context.Context, plan string) error {
+			return nil
+		},
+	})
+
+	names := a.Tools().Names()
+	assert.Contains(t, names, "Read")
+	assert.Contains(t, names, "AskUserQuestion")
+	assert.Contains(t, names, "TodoWrite")
+	assert.Contains(t, names, "ExitPlanMode")
+}
+
+// TestIntegration_BackwardCompat_ExistingBehavior verifies Phase 1 behavior unchanged.
+func TestIntegration_BackwardCompat_ExistingBehavior(t *testing.T) {
+	// Agent with no Phase 2 options should work exactly as before
+	a := agent.NewAgent()
+
+	assert.Equal(t, agent.DefaultModel, a.Model())
+	assert.NotNil(t, a.Tools())
+
+	// Register only Phase 1 tools
+	tools.RegisterAll(a.Tools())
+	apiTools := a.Tools().ListForAPI()
+	assert.Len(t, apiTools, 6) // Read, Write, Edit, Bash, Glob, Grep
 }

@@ -29,7 +29,7 @@ type SessionMeta struct {
 func NewSession() *Session {
 	now := time.Now()
 	return &Session{
-		ID:        generateID(),
+		ID:        generateID(PrefixSession),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
@@ -42,8 +42,3 @@ type SessionStore interface {
 	Delete(ctx context.Context, id string) error
 }
 
-// generateID produces a simple unique identifier for sessions.
-// A production implementation would use crypto/rand or UUID.
-func generateID() string {
-	return time.Now().Format("20060102-150405.000000000")
-}
