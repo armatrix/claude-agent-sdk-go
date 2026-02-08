@@ -447,13 +447,13 @@ Each dev agent works in isolation. No cross-module dependencies during Phase 1.
 - [x] Teams: All Teams-specific tools
 - [x] 5 skeleton topologies (interface satisfied, minimal logic)
 
-**Deferred (future phases):**
-- [ ] Pipeline topology (full implementation)
-- [ ] PeerRing topology (full implementation)
-- [ ] SupervisorTree topology (full implementation)
-- [ ] Blackboard topology (full implementation + Blackboard state)
-- [ ] MapReduce topology (full implementation)
-- [ ] MCP Server (in-process, for exposing Go tools as MCP)
-- [ ] Plugin system
-- [ ] Sandbox configuration
-- [ ] File Checkpointing (rewind)
+**Previously deferred, now complete:**
+- [x] Pipeline topology (full: NextTask stage-priority assignment, OnMemberJoin/Leave)
+- [x] PeerRing topology (full: round-robin NextTask, dynamic ring management)
+- [x] SupervisorTree topology (full: leaf-only assignment, orphan re-parenting on leave)
+- [x] Blackboard topology (full: idle-member assignment, Blackboard state)
+- [x] MapReduce topology (full: worker-only distribution, dynamic worker pool)
+- [x] MCP Server (in-process SDKServer with AddTool generic + AgentOption)
+- [x] Plugin system (plugin/ package)
+- [x] Sandbox configuration (WithSandbox + context propagation)
+- [x] File Checkpointing (checkpoint/ package)
