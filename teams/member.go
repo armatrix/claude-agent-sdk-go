@@ -1,6 +1,8 @@
 package teams
 
 import (
+	"context"
+	"fmt"
 	"sync/atomic"
 
 	agent "github.com/armatrix/claude-agent-sdk-go"
@@ -66,3 +68,48 @@ func (m *Member) Status() MemberStatus { return MemberStatus(m.status.Load()) }
 
 // SetStatus atomically updates the member's status.
 func (m *Member) SetStatus(s MemberStatus) { m.status.Store(int32(s)) }
+
+// Inbox returns the member's message channel for receiving messages.
+func (m *Member) Inbox() <-chan *Message { return m.inbox }
+
+// Run starts the member's main loop, listening for messages and processing them
+// through the member's Agent. Events are forwarded to the aggregated stream.
+// Run blocks until ctx is cancelled or the member is shut down.
+func (m *Member) Run(ctx context.Context, events chan<- *Event) {
+	for {
+		select {
+		case <-ctx.Done():
+			m.SetStatus(MemberShutdown)
+			return
+		case msg, ok := <-m.inbox:
+			if !ok {
+				m.SetStatus(MemberShutdown)
+				return
+			}
+
+			// Handle shutdown requests
+			if msg.Type == MessageShutdownRequest {
+				m.SetStatus(MemberShutdown)
+				// Send acknowledgment back
+				ack := NewMessage(MessageShutdownResponse, m.name, msg.From, "shutdown acknowledged")
+				ack.RequestID = msg.RequestID
+				_ = m.bus.Send(ack)
+				return
+			}
+
+			m.SetStatus(MemberWorking)
+
+			// Process the message through the member's agent
+			prompt := fmt.Sprintf("[Message from %s]: %s", msg.From, msg.Content)
+			stream := m.agent.Run(ctx, prompt)
+			for stream.Next() {
+				events <- &Event{
+					MemberName: m.name,
+					AgentEvent: stream.Current(),
+				}
+			}
+
+			m.SetStatus(MemberIdle)
+		}
+	}
+}
