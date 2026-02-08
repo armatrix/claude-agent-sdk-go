@@ -1,6 +1,21 @@
 # Claude Agent SDK for Go
 
-Pure Go implementation of the Claude Agent SDK. Calls the Anthropic API directly via [`anthropic-sdk-go`](https://github.com/anthropics/anthropic-sdk-go) — no Claude Code binary dependency.
+**Pure Go Agent SDK with pluggable team topologies** — no subprocess, no runtime dependency.
+Build single agents or orchestrate multi-agent teams with composable topology primitives and native goroutine concurrency.
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/armatrix/claude-agent-sdk-go.svg)](https://pkg.go.dev/github.com/armatrix/claude-agent-sdk-go)
+[![Go Report Card](https://goreportcard.com/badge/github.com/armatrix/claude-agent-sdk-go)](https://goreportcard.com/report/github.com/armatrix/claude-agent-sdk-go)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+## Why This SDK?
+
+|  | Official TS/Python SDK | This SDK (Go) |
+|--|----------------------|---------------|
+| Runtime | Spawns Claude Code subprocess | Pure Go binary, zero dependency |
+| Agent Teams | Leader-only topology | **Pluggable topologies** — 6 built-in, compose your own |
+| Concurrency | Process isolation, JSON stdio | goroutine + channel, sub-microsecond messaging |
+| Embedding | Requires Node.js/Python runtime | Single binary, embed in any Go project |
+| Long sessions | Bound to subprocess lifetime | In-process, unlimited duration |
 
 ## Install
 
@@ -75,6 +90,42 @@ for stream2.Next() {
 	}
 }
 ```
+
+## Team Topologies
+
+The SDK ships with 6 built-in topology templates. Each is a composable building block — mix them, chain them, or build your own.
+
+```
+Leader          Pipeline        Peer Ring       Supervisor Tree   Blackboard        MapReduce
+
+   L            A → B → C       A ↔ B              S             A → ┌─────┐ ← B   Dispatcher
+  /|\                           ↕   ↕             / \            C → │Board│ ← D    / | \
+ T T T                          D ↔ C           S     W              └─────┘       W  W  W
+                                               / \                                  \ | /
+                                              W   W                                 Merger
+```
+
+| Topology | Pattern | Best For |
+|----------|---------|----------|
+| **Leader** | Star (hub-spoke) | General dev tasks, 3-6 agents |
+| **Pipeline** | A → B → C → D | Review chains, data processing, content production |
+| **Peer Ring** | Full-mesh | Multi-perspective review, debate, ensemble voting |
+| **Supervisor Tree** | Hierarchical | Large teams (10+), fault isolation, modular projects |
+| **Blackboard** | Shared-state | Expert collaboration, incident analysis, loose coupling |
+| **MapReduce** | Fan-out → Fan-in | Batch migration, parallel testing, multi-repo operations |
+
+### Build Your Own
+
+Topologies are composable primitives, not a closed set. Combine a Pipeline with MapReduce for parallel review stages, or nest a Peer Ring inside a Supervisor Tree node.
+
+```go
+// Example: Pipeline + MapReduce hybrid
+// Stage 1: Dispatcher splits tasks
+// Stage 2: N workers process in parallel (MapReduce)
+// Stage 3: Reviewer validates merged output (Pipeline continues)
+```
+
+> **Status**: Team topologies are under active development (Phase 4). The single-agent core and built-in tools are production-ready. See [Roadmap](#roadmap) for details.
 
 ## Custom Tools
 
@@ -184,16 +235,20 @@ a := agent.NewAgent(
 ## Architecture
 
 ```
-Agent (stateless)          Client (stateful)
-  ├── ToolRegistry           ├── Agent
-  ├── agentOptions           ├── Session (messages + metadata)
-  └── Run() → AgentStream    └── Query() → AgentStream
+Agent (stateless, shareable)     Client (stateful, per-session)
+  ├── ToolRegistry                 ├── Agent (reuses)
+  ├── agentOptions                 ├── Session (messages + metadata)
+  └── Run() → AgentStream          └── Query() → AgentStream
+
+Teams (pluggable topologies):
+  teams/topology/  → Topology interface + 6 built-in templates
+  teams/message/   → MessageBus (channel fan-out)
+  teams/task/      → SharedTaskList (atomic claim)
 
 Internal:
-  internal/agent/    → RunLoop (core engine) + CompactAwareStreamer
-  internal/budget/   → BudgetTracker (decimal.Decimal pricing)
-  internal/builtin/  → 6 built-in tools
-  internal/schema/   → JSON Schema generation from Go structs
+  internal/engine/  → RunLoop (core engine) + CompactAwareStreamer
+  internal/budget/  → BudgetTracker (decimal.Decimal pricing)
+  internal/schema/  → JSON Schema generation from Go structs
 ```
 
 **Key design decisions:**
@@ -201,25 +256,20 @@ Internal:
 - **No LLM abstraction** — directly uses `anthropic-sdk-go` types
 - **`Tool[T]` generics** — type-safe inputs with auto schema generation
 - **`decimal.Decimal` for costs** — no float64 for money
+- **Pluggable topologies** — `Topology` interface, compose built-in or bring your own
 
-## Development
+## Roadmap
 
-```bash
-# Run all tests (122 tests)
-go test ./...
+| Phase | Status | Scope |
+|-------|--------|-------|
+| **Phase 1** | **Done** | Single agent, built-in tools, streaming, compaction, budget |
+| **Phase 2** | In Progress | Hooks, permissions, session persistence, Client |
+| **Phase 3** | Planned | Subagents, MCP integration, plugins |
+| **Phase 4** | Planned | Agent Teams with pluggable topologies |
 
-# Run with verbose output
-go test -v ./...
+## Contributing
 
-# Run integration tests (requires API key)
-ANTHROPIC_API_KEY=sk-xxx go test -v -run Integration ./...
-
-# Build check
-go build ./...
-
-# Vet
-go vet ./...
-```
+Contributions welcome. Please open an issue first for non-trivial changes.
 
 ## License
 
