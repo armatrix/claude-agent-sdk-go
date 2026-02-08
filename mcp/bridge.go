@@ -1,5 +1,7 @@
 package mcp
 
+import "encoding/json"
+
 // Bridge converts MCP tools into agent-compatible tool entries.
 // Tool naming convention: mcp__{server}__{tool} (aligned with Claude Code).
 
@@ -16,6 +18,9 @@ type BridgedTool struct {
 
 	// Description is the tool's description from the MCP server.
 	Description string
+
+	// InputSchema is the raw JSON schema for the tool's input parameters.
+	InputSchema json.RawMessage
 }
 
 // BridgeToolName returns the namespaced tool name for an MCP tool.
