@@ -82,17 +82,23 @@ func (m *mockStreamer) NewStreaming(ctx context.Context, params anthropic.Messag
 // eventCollector implements EventSink, collecting all events for assertions.
 type eventCollector struct {
 	mu       sync.Mutex
-	systems  []struct{ SessionID, Model string }
+	systems  []struct {
+		SessionID string
+		Model     anthropic.Model
+	}
 	streams  []string
 	assists  []anthropic.Message
 	results  []ResultInfo
 	compacts []CompactInfo
 }
 
-func (c *eventCollector) OnSystem(sessionID, model string) {
+func (c *eventCollector) OnSystem(sessionID string, model anthropic.Model) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.systems = append(c.systems, struct{ SessionID, Model string }{sessionID, model})
+	c.systems = append(c.systems, struct {
+		SessionID string
+		Model     anthropic.Model
+	}{sessionID, model})
 }
 
 func (c *eventCollector) OnStream(delta string) {
@@ -137,7 +143,7 @@ type sseEvent struct {
 
 // Pre-built SSE events for common patterns.
 
-func messageStart(model string, inputTokens int64) sseEvent {
+func messageStart(model anthropic.Model, inputTokens int64) sseEvent {
 	return sseEvent{
 		Type: "message_start",
 		Data: fmt.Sprintf(`{"type":"message_start","message":{"id":"msg_test","type":"message","role":"assistant","content":[],"model":"%s","stop_reason":null,"usage":{"input_tokens":%d,"output_tokens":0}}}`, model, inputTokens),
@@ -197,7 +203,7 @@ func messageStop() sseEvent {
 
 func TestRunLoop_SimpleTextResponse(t *testing.T) {
 	sse := buildSSE(
-		messageStart("claude-opus-4-6", 10),
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
 		textBlockStart(0, ""),
 		textDelta(0, "Hello"),
 		textDelta(0, " world"),
@@ -217,7 +223,7 @@ func TestRunLoop_SimpleTextResponse(t *testing.T) {
 	cfg := LoopConfig{
 		Streamer:  streamer,
 		Tools:     tools,
-		Model:     "claude-opus-4-6",
+		Model:     anthropic.ModelClaudeOpus4_6,
 		MaxTokens: 1024,
 		Messages:  &messages,
 		SessionID: "test-session",
@@ -229,7 +235,7 @@ func TestRunLoop_SimpleTextResponse(t *testing.T) {
 	// Verify system event
 	require.Len(t, collector.systems, 1)
 	assert.Equal(t, "test-session", collector.systems[0].SessionID)
-	assert.Equal(t, "claude-opus-4-6", collector.systems[0].Model)
+	assert.Equal(t, anthropic.ModelClaudeOpus4_6, collector.systems[0].Model)
 
 	// Verify streaming deltas
 	assert.Equal(t, []string{"Hello", " world"}, collector.streams)
@@ -251,7 +257,7 @@ func TestRunLoop_SimpleTextResponse(t *testing.T) {
 func TestRunLoop_ToolUseFlow(t *testing.T) {
 	// First API call: model requests tool use
 	sse1 := buildSSE(
-		messageStart("claude-opus-4-6", 10),
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
 		toolUseStart(0, "toolu_123", "get_weather"),
 		inputJSONDelta(0, `{\"city\": \"SF\"}`),
 		blockStop(0),
@@ -261,7 +267,7 @@ func TestRunLoop_ToolUseFlow(t *testing.T) {
 
 	// Second API call: model produces text after getting tool result
 	sse2 := buildSSE(
-		messageStart("claude-opus-4-6", 30),
+		messageStart(anthropic.ModelClaudeOpus4_6, 30),
 		textBlockStart(0, ""),
 		textDelta(0, "The weather in SF is sunny."),
 		blockStop(0),
@@ -287,7 +293,7 @@ func TestRunLoop_ToolUseFlow(t *testing.T) {
 	cfg := LoopConfig{
 		Streamer:  streamer,
 		Tools:     tools,
-		Model:     "claude-opus-4-6",
+		Model:     anthropic.ModelClaudeOpus4_6,
 		MaxTokens: 1024,
 		Messages:  &messages,
 		SessionID: "test-session",
@@ -314,7 +320,7 @@ func TestRunLoop_ToolUseFlow(t *testing.T) {
 func TestRunLoop_ToolError_ContinuesLoop(t *testing.T) {
 	// First API call: model requests tool use
 	sse1 := buildSSE(
-		messageStart("claude-opus-4-6", 10),
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
 		toolUseStart(0, "toolu_456", "failing_tool"),
 		inputJSONDelta(0, `{}`),
 		blockStop(0),
@@ -324,7 +330,7 @@ func TestRunLoop_ToolError_ContinuesLoop(t *testing.T) {
 
 	// Second API call: model produces text after getting error result
 	sse2 := buildSSE(
-		messageStart("claude-opus-4-6", 30),
+		messageStart(anthropic.ModelClaudeOpus4_6, 30),
 		textBlockStart(0, ""),
 		textDelta(0, "The tool failed, sorry."),
 		blockStop(0),
@@ -348,7 +354,7 @@ func TestRunLoop_ToolError_ContinuesLoop(t *testing.T) {
 	cfg := LoopConfig{
 		Streamer:  streamer,
 		Tools:     tools,
-		Model:     "claude-opus-4-6",
+		Model:     anthropic.ModelClaudeOpus4_6,
 		MaxTokens: 1024,
 		Messages:  &messages,
 		SessionID: "test-session",
@@ -366,7 +372,7 @@ func TestRunLoop_ToolError_ContinuesLoop(t *testing.T) {
 func TestRunLoop_ToolNotFound_ReturnsErrorResult(t *testing.T) {
 	// API call with unknown tool
 	sse1 := buildSSE(
-		messageStart("claude-opus-4-6", 10),
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
 		toolUseStart(0, "toolu_789", "nonexistent_tool"),
 		inputJSONDelta(0, `{}`),
 		blockStop(0),
@@ -376,7 +382,7 @@ func TestRunLoop_ToolNotFound_ReturnsErrorResult(t *testing.T) {
 
 	// After error tool result, model ends
 	sse2 := buildSSE(
-		messageStart("claude-opus-4-6", 30),
+		messageStart(anthropic.ModelClaudeOpus4_6, 30),
 		textBlockStart(0, ""),
 		textDelta(0, "I couldn't use that tool."),
 		blockStop(0),
@@ -396,7 +402,7 @@ func TestRunLoop_ToolNotFound_ReturnsErrorResult(t *testing.T) {
 	cfg := LoopConfig{
 		Streamer:  streamer,
 		Tools:     tools,
-		Model:     "claude-opus-4-6",
+		Model:     anthropic.ModelClaudeOpus4_6,
 		MaxTokens: 1024,
 		Messages:  &messages,
 		SessionID: "test-session",
@@ -413,7 +419,7 @@ func TestRunLoop_ToolNotFound_ReturnsErrorResult(t *testing.T) {
 func TestRunLoop_MaxTurnsTermination(t *testing.T) {
 	// Model keeps requesting tools
 	toolUseSSE := buildSSE(
-		messageStart("claude-opus-4-6", 10),
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
 		toolUseStart(0, "toolu_loop", "echo"),
 		inputJSONDelta(0, `{\"msg\":\"hi\"}`),
 		blockStop(0),
@@ -437,7 +443,7 @@ func TestRunLoop_MaxTurnsTermination(t *testing.T) {
 	cfg := LoopConfig{
 		Streamer:  streamer,
 		Tools:     tools,
-		Model:     "claude-opus-4-6",
+		Model:     anthropic.ModelClaudeOpus4_6,
 		MaxTokens: 1024,
 		MaxTurns:  2,
 		Messages:  &messages,
@@ -455,7 +461,7 @@ func TestRunLoop_MaxTurnsTermination(t *testing.T) {
 
 func TestRunLoop_MaxTokensStopReason(t *testing.T) {
 	sse := buildSSE(
-		messageStart("claude-opus-4-6", 10),
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
 		textBlockStart(0, ""),
 		textDelta(0, "This is a very long resp"),
 		blockStop(0),
@@ -474,7 +480,7 @@ func TestRunLoop_MaxTokensStopReason(t *testing.T) {
 	cfg := LoopConfig{
 		Streamer:  streamer,
 		Tools:     tools,
-		Model:     "claude-opus-4-6",
+		Model:     anthropic.ModelClaudeOpus4_6,
 		MaxTokens: 4096,
 		Messages:  &messages,
 		SessionID: "test-session",
@@ -504,7 +510,7 @@ func TestRunLoop_ContextCancellation(t *testing.T) {
 	cfg := LoopConfig{
 		Streamer:  streamer,
 		Tools:     tools,
-		Model:     "claude-opus-4-6",
+		Model:     anthropic.ModelClaudeOpus4_6,
 		MaxTokens: 1024,
 		Messages:  &messages,
 		SessionID: "test-session",
@@ -524,7 +530,7 @@ func TestRunLoop_ContextCancellation(t *testing.T) {
 func TestRunLoop_UsageTracking(t *testing.T) {
 	// Two-turn conversation to test cumulative usage
 	sse1 := buildSSE(
-		messageStart("claude-opus-4-6", 100),
+		messageStart(anthropic.ModelClaudeOpus4_6, 100),
 		toolUseStart(0, "toolu_u1", "echo"),
 		inputJSONDelta(0, `{}`),
 		blockStop(0),
@@ -533,7 +539,7 @@ func TestRunLoop_UsageTracking(t *testing.T) {
 	)
 
 	sse2 := buildSSE(
-		messageStart("claude-opus-4-6", 200),
+		messageStart(anthropic.ModelClaudeOpus4_6, 200),
 		textBlockStart(0, ""),
 		textDelta(0, "Done"),
 		blockStop(0),
@@ -556,7 +562,7 @@ func TestRunLoop_UsageTracking(t *testing.T) {
 	cfg := LoopConfig{
 		Streamer:  streamer,
 		Tools:     tools,
-		Model:     "claude-opus-4-6",
+		Model:     anthropic.ModelClaudeOpus4_6,
 		MaxTokens: 1024,
 		Messages:  &messages,
 		SessionID: "test-session",
@@ -576,7 +582,7 @@ func TestRunLoop_UsageTracking(t *testing.T) {
 func TestRunLoop_StreamError(t *testing.T) {
 	// SSE with an error event
 	sse := buildSSE(
-		messageStart("claude-opus-4-6", 10),
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
 		sseEvent{Type: "error", Data: `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`},
 	)
 
@@ -591,7 +597,7 @@ func TestRunLoop_StreamError(t *testing.T) {
 	cfg := LoopConfig{
 		Streamer:  streamer,
 		Tools:     tools,
-		Model:     "claude-opus-4-6",
+		Model:     anthropic.ModelClaudeOpus4_6,
 		MaxTokens: 1024,
 		Messages:  &messages,
 		SessionID: "test-session",
@@ -608,7 +614,7 @@ func TestRunLoop_StreamError(t *testing.T) {
 func TestRunLoop_MultipleToolsInOneResponse(t *testing.T) {
 	// Model requests two tools at once
 	sse1 := buildSSE(
-		messageStart("claude-opus-4-6", 10),
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
 		toolUseStart(0, "toolu_a", "tool_a"),
 		inputJSONDelta(0, `{\"key\":\"val_a\"}`),
 		blockStop(0),
@@ -620,7 +626,7 @@ func TestRunLoop_MultipleToolsInOneResponse(t *testing.T) {
 	)
 
 	sse2 := buildSSE(
-		messageStart("claude-opus-4-6", 50),
+		messageStart(anthropic.ModelClaudeOpus4_6, 50),
 		textBlockStart(0, ""),
 		textDelta(0, "Both tools done."),
 		blockStop(0),
@@ -650,7 +656,7 @@ func TestRunLoop_MultipleToolsInOneResponse(t *testing.T) {
 	cfg := LoopConfig{
 		Streamer:  streamer,
 		Tools:     tools,
-		Model:     "claude-opus-4-6",
+		Model:     anthropic.ModelClaudeOpus4_6,
 		MaxTokens: 1024,
 		Messages:  &messages,
 		SessionID: "test-session",
@@ -669,7 +675,7 @@ func TestRunLoop_MultipleToolsInOneResponse(t *testing.T) {
 func TestRunLoop_CompactionStopReason(t *testing.T) {
 	// First API call: model triggers compaction
 	sse1 := buildSSE(
-		messageStart("claude-opus-4-6", 10),
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
 		textBlockStart(0, ""),
 		textDelta(0, "compacting..."),
 		blockStop(0),
@@ -679,7 +685,7 @@ func TestRunLoop_CompactionStopReason(t *testing.T) {
 
 	// Second API call: after compaction, model responds normally
 	sse2 := buildSSE(
-		messageStart("claude-opus-4-6", 10),
+		messageStart(anthropic.ModelClaudeOpus4_6, 10),
 		textBlockStart(0, ""),
 		textDelta(0, "Done after compaction."),
 		blockStop(0),
@@ -698,7 +704,7 @@ func TestRunLoop_CompactionStopReason(t *testing.T) {
 	cfg := LoopConfig{
 		Streamer:  streamer,
 		Tools:     tools,
-		Model:     "claude-opus-4-6",
+		Model:     anthropic.ModelClaudeOpus4_6,
 		MaxTokens: 1024,
 		Messages:  &messages,
 		SessionID: "test-session",

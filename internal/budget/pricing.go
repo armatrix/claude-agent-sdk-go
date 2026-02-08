@@ -1,6 +1,9 @@
 package budget
 
-import "github.com/shopspring/decimal"
+import (
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/shopspring/decimal"
+)
 
 // ModelPricing holds per-model token prices in USD per million tokens.
 type ModelPricing struct {
@@ -46,8 +49,8 @@ func (p ModelPricing) CostForOutput(outputTokens, totalInputTokens int) decimal.
 
 // DefaultPricing contains built-in pricing for Claude models (USD per million tokens).
 // Can be overridden via WithPricing() option.
-var DefaultPricing = map[string]ModelPricing{
-	"claude-opus-4-6": {
+var DefaultPricing = map[anthropic.Model]ModelPricing{
+	anthropic.ModelClaudeOpus4_6: {
 		InputPerMTok:         decimal.NewFromFloat(5),
 		OutputPerMTok:        decimal.NewFromFloat(25),
 		LongInputPerMTok:     decimal.NewFromFloat(10),
@@ -56,7 +59,7 @@ var DefaultPricing = map[string]ModelPricing{
 		CacheReadPerMTok:     decimal.NewFromFloat(0.5),
 		LongContextThreshold: 200_000,
 	},
-	"claude-sonnet-4-5": {
+	anthropic.ModelClaudeSonnet4_5: {
 		InputPerMTok:         decimal.NewFromFloat(3),
 		OutputPerMTok:        decimal.NewFromFloat(15),
 		LongInputPerMTok:     decimal.NewFromFloat(6),
@@ -65,7 +68,7 @@ var DefaultPricing = map[string]ModelPricing{
 		CacheReadPerMTok:     decimal.NewFromFloat(0.3),
 		LongContextThreshold: 200_000,
 	},
-	"claude-haiku-4-5": {
+	anthropic.ModelClaudeHaiku4_5: {
 		InputPerMTok:         decimal.NewFromFloat(1),
 		OutputPerMTok:        decimal.NewFromFloat(5),
 		CacheWritePerMTok:    decimal.NewFromFloat(1.25),

@@ -10,7 +10,7 @@ import (
 
 func TestConvertToBetaParams_Basic(t *testing.T) {
 	params := anthropic.MessageNewParams{
-		Model:     "claude-opus-4-6",
+		Model:     anthropic.ModelClaudeOpus4_6,
 		MaxTokens: 4096,
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock("Hello")),
@@ -24,7 +24,7 @@ func TestConvertToBetaParams_Basic(t *testing.T) {
 
 	beta := convertToBetaParams(params, compact)
 
-	assert.Equal(t, anthropic.Model("claude-opus-4-6"), beta.Model)
+	assert.Equal(t, anthropic.ModelClaudeOpus4_6, beta.Model)
 	assert.Equal(t, int64(4096), beta.MaxTokens)
 	require.Len(t, beta.Messages, 1)
 	assert.Equal(t, anthropic.BetaMessageParamRole("user"), beta.Messages[0].Role)
@@ -42,7 +42,7 @@ func TestConvertToBetaParams_Basic(t *testing.T) {
 
 func TestConvertToBetaParams_WithPauseAndInstructions(t *testing.T) {
 	params := anthropic.MessageNewParams{
-		Model:     "claude-opus-4-6",
+		Model:     anthropic.ModelClaudeOpus4_6,
 		MaxTokens: 4096,
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock("Hello")),
@@ -65,7 +65,7 @@ func TestConvertToBetaParams_WithPauseAndInstructions(t *testing.T) {
 
 func TestConvertToBetaParams_WithTools(t *testing.T) {
 	params := anthropic.MessageNewParams{
-		Model:     "claude-opus-4-6",
+		Model:     anthropic.ModelClaudeOpus4_6,
 		MaxTokens: 4096,
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock("Use tools")),

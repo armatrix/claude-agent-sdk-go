@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	agent "github.com/armatrix/claude-agent-sdk-go"
 	"github.com/armatrix/claude-agent-sdk-go/internal/builtin"
 	"github.com/stretchr/testify/assert"
@@ -21,7 +22,7 @@ func TestIntegration_FullAgentRun_WithAPI(t *testing.T) {
 	}
 
 	a := agent.NewAgent(
-		agent.WithModel("claude-haiku-4-5-20251001"), // Use cheapest model for testing
+		agent.WithModel(anthropic.ModelClaudeHaiku4_5_20251001), // Use cheapest model for testing
 		agent.WithMaxTurns(3),
 	)
 
@@ -77,7 +78,7 @@ func TestIntegration_Client_MultiTurn(t *testing.T) {
 	}
 
 	client := agent.NewClient(
-		agent.WithModel("claude-haiku-4-5-20251001"),
+		agent.WithModel(anthropic.ModelClaudeHaiku4_5_20251001),
 		agent.WithMaxTurns(2),
 	)
 	defer client.Close()
@@ -113,7 +114,7 @@ func TestIntegration_StreamIterator(t *testing.T) {
 	// Create an agent with no API key — this will fail at API call
 	// but we can verify the stream produces proper error handling
 	a := agent.NewAgent(
-		agent.WithModel("claude-opus-4-6"),
+		agent.WithModel(anthropic.ModelClaudeOpus4_6),
 		agent.WithMaxTurns(1),
 	)
 
@@ -169,6 +170,6 @@ func TestIntegration_DefaultOptions(t *testing.T) {
 	assert.Equal(t, agent.DefaultModel, a.Model())
 
 	// Custom model overrides default
-	a2 := agent.NewAgent(agent.WithModel("claude-haiku-4-5-20251001"))
-	assert.Equal(t, "claude-haiku-4-5-20251001", a2.Model())
+	a2 := agent.NewAgent(agent.WithModel(anthropic.ModelClaudeHaiku4_5_20251001))
+	assert.Equal(t, anthropic.ModelClaudeHaiku4_5_20251001, a2.Model())
 }

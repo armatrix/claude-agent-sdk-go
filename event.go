@@ -25,7 +25,7 @@ type Event interface {
 // SystemEvent is emitted once at the start of a run with initialization info.
 type SystemEvent struct {
 	SessionID string
-	Model     string
+	Model     anthropic.Model
 }
 
 func (e *SystemEvent) Type() EventType { return EventSystem }

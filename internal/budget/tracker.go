@@ -3,6 +3,7 @@ package budget
 import (
 	"sync"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/shopspring/decimal"
 )
 
@@ -29,12 +30,12 @@ type BudgetTracker struct {
 	maxBudget  decimal.Decimal // 0 = unlimited
 	totalCost  decimal.Decimal
 	totalUsage Usage
-	pricing    map[string]ModelPricing
+	pricing    map[anthropic.Model]ModelPricing
 	mu         sync.Mutex
 }
 
 // NewBudgetTracker creates a new tracker. maxBudget of 0 means unlimited.
-func NewBudgetTracker(maxBudget decimal.Decimal, pricing map[string]ModelPricing) *BudgetTracker {
+func NewBudgetTracker(maxBudget decimal.Decimal, pricing map[anthropic.Model]ModelPricing) *BudgetTracker {
 	return &BudgetTracker{
 		maxBudget: maxBudget,
 		totalCost: decimal.Zero,
@@ -43,7 +44,7 @@ func NewBudgetTracker(maxBudget decimal.Decimal, pricing map[string]ModelPricing
 }
 
 // RecordUsage records token usage for a single API call and updates the cumulative cost.
-func (b *BudgetTracker) RecordUsage(model string, usage Usage) {
+func (b *BudgetTracker) RecordUsage(model anthropic.Model, usage Usage) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -65,7 +66,7 @@ func (b *BudgetTracker) RecordUsage(model string, usage Usage) {
 }
 
 // RecordIterations records multiple usage iterations (e.g. compaction + message steps).
-func (b *BudgetTracker) RecordIterations(model string, iterations []UsageIteration) {
+func (b *BudgetTracker) RecordIterations(model anthropic.Model, iterations []UsageIteration) {
 	for _, iter := range iterations {
 		b.RecordUsage(model, iter.Usage)
 	}

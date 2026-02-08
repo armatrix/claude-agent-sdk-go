@@ -19,7 +19,7 @@ type Session struct {
 
 // SessionMeta contains summary statistics for a session.
 type SessionMeta struct {
-	Model       string
+	Model       anthropic.Model
 	TotalCost   decimal.Decimal
 	TotalTokens Usage
 	NumTurns    int

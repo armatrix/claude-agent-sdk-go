@@ -1,10 +1,14 @@
 package agent
 
-// Model and context window defaults.
-const (
-	// DefaultModel is the default Claude model used when no model is specified.
-	DefaultModel = "claude-opus-4-6"
+import "github.com/anthropics/anthropic-sdk-go"
 
+// Model and context window defaults.
+var (
+	// DefaultModel is the default Claude model used when no model is specified.
+	DefaultModel anthropic.Model = anthropic.ModelClaudeOpus4_6
+)
+
+const (
 	// DefaultContextWindow is the standard 200K context window.
 	DefaultContextWindow = 200_000
 

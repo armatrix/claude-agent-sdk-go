@@ -3,6 +3,7 @@ package agent
 import (
 	"testing"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,9 +24,9 @@ func TestResolveOptionsDefaults(t *testing.T) {
 
 func TestWithModel(t *testing.T) {
 	opts := resolveOptions([]AgentOption{
-		WithModel("claude-sonnet-4-5"),
+		WithModel(anthropic.ModelClaudeSonnet4_5),
 	})
-	assert.Equal(t, "claude-sonnet-4-5", opts.model)
+	assert.Equal(t, anthropic.ModelClaudeSonnet4_5, opts.model)
 }
 
 func TestWithContextWindow(t *testing.T) {
@@ -111,7 +112,7 @@ func TestWithDisabledTools(t *testing.T) {
 func TestMultipleOptions(t *testing.T) {
 	budget := decimal.NewFromFloat(10.0)
 	opts := resolveOptions([]AgentOption{
-		WithModel("claude-haiku-4-5"),
+		WithModel(anthropic.ModelClaudeHaiku4_5),
 		WithContextWindow(ContextWindow1M),
 		WithMaxOutputTokens(MaxOutputTokensOpus46),
 		WithMaxTurns(50),
@@ -121,7 +122,7 @@ func TestMultipleOptions(t *testing.T) {
 		WithDisabledTools("Bash"),
 	})
 
-	assert.Equal(t, "claude-haiku-4-5", opts.model)
+	assert.Equal(t, anthropic.ModelClaudeHaiku4_5, opts.model)
 	assert.Equal(t, ContextWindow1M, opts.contextWindow)
 	assert.Equal(t, MaxOutputTokensOpus46, opts.maxOutputTokens)
 	assert.Equal(t, 50, opts.maxTurns)
@@ -133,12 +134,12 @@ func TestMultipleOptions(t *testing.T) {
 
 func TestNewAgentAppliesOptions(t *testing.T) {
 	agent := NewAgent(
-		WithModel("claude-sonnet-4-5"),
+		WithModel(anthropic.ModelClaudeSonnet4_5),
 		WithMaxTurns(20),
 	)
 
 	require.NotNil(t, agent)
-	assert.Equal(t, "claude-sonnet-4-5", agent.Model())
+	assert.Equal(t, anthropic.ModelClaudeSonnet4_5, agent.Model())
 	assert.Equal(t, 20, agent.Options().maxTurns)
 }
 

@@ -4,13 +4,14 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestCostForInput_StandardPricing(t *testing.T) {
-	p := DefaultPricing["claude-opus-4-6"]
+	p := DefaultPricing[anthropic.ModelClaudeOpus4_6]
 
 	// 1000 input tokens at $5/MTok = $0.005
 	cost := p.CostForInput(1000, 0, 0, 1000)
@@ -19,7 +20,7 @@ func TestCostForInput_StandardPricing(t *testing.T) {
 }
 
 func TestCostForOutput_StandardPricing(t *testing.T) {
-	p := DefaultPricing["claude-opus-4-6"]
+	p := DefaultPricing[anthropic.ModelClaudeOpus4_6]
 
 	// 500 output tokens at $25/MTok = $0.0125
 	cost := p.CostForOutput(500, 1000)
@@ -28,7 +29,7 @@ func TestCostForOutput_StandardPricing(t *testing.T) {
 }
 
 func TestCostForInput_LongContext(t *testing.T) {
-	p := DefaultPricing["claude-opus-4-6"]
+	p := DefaultPricing[anthropic.ModelClaudeOpus4_6]
 
 	// 250K total input → long context pricing applies to ALL tokens
 	// 250000 input at $10/MTok = $2.50
@@ -38,7 +39,7 @@ func TestCostForInput_LongContext(t *testing.T) {
 }
 
 func TestCostForOutput_LongContext(t *testing.T) {
-	p := DefaultPricing["claude-opus-4-6"]
+	p := DefaultPricing[anthropic.ModelClaudeOpus4_6]
 
 	// Output with 250K input → long output rate
 	// 1000 output at $37.50/MTok = $0.0375
@@ -48,7 +49,7 @@ func TestCostForOutput_LongContext(t *testing.T) {
 }
 
 func TestCostForInput_CacheTokens(t *testing.T) {
-	p := DefaultPricing["claude-opus-4-6"]
+	p := DefaultPricing[anthropic.ModelClaudeOpus4_6]
 
 	// 500 input + 200 cache read + 300 cache write, total 1000 (under threshold)
 	// input:     500 * $5/MTok   = $0.0025
@@ -62,7 +63,7 @@ func TestCostForInput_CacheTokens(t *testing.T) {
 }
 
 func TestCostForInput_HaikuNoLongContext(t *testing.T) {
-	p := DefaultPricing["claude-haiku-4-5"]
+	p := DefaultPricing[anthropic.ModelClaudeHaiku4_5]
 
 	// Haiku has LongContextThreshold=0, so it never triggers long pricing
 	// Even with 500K total input, standard rate applies
@@ -75,7 +76,7 @@ func TestCostForInput_HaikuNoLongContext(t *testing.T) {
 func TestRecordUsage_StandardOpus(t *testing.T) {
 	bt := NewBudgetTracker(decimal.Zero, DefaultPricing)
 
-	bt.RecordUsage("claude-opus-4-6", Usage{
+	bt.RecordUsage(anthropic.ModelClaudeOpus4_6, Usage{
 		InputTokens:  1000,
 		OutputTokens: 500,
 	})
@@ -94,7 +95,7 @@ func TestRecordUsage_StandardOpus(t *testing.T) {
 func TestRecordUsage_LongContextAllTokensPremium(t *testing.T) {
 	bt := NewBudgetTracker(decimal.Zero, DefaultPricing)
 
-	bt.RecordUsage("claude-opus-4-6", Usage{
+	bt.RecordUsage(anthropic.ModelClaudeOpus4_6, Usage{
 		InputTokens:  250_000,
 		OutputTokens: 1000,
 	})
@@ -110,7 +111,7 @@ func TestRecordUsage_LongContextAllTokensPremium(t *testing.T) {
 func TestRecordUsage_WithCacheTokens(t *testing.T) {
 	bt := NewBudgetTracker(decimal.Zero, DefaultPricing)
 
-	bt.RecordUsage("claude-sonnet-4-5", Usage{
+	bt.RecordUsage(anthropic.ModelClaudeSonnet4_5, Usage{
 		InputTokens:              5000,
 		OutputTokens:             2000,
 		CacheReadInputTokens:     1000,
@@ -133,7 +134,7 @@ func TestRecordUsage_WithCacheTokens(t *testing.T) {
 func TestBudgetUnlimited(t *testing.T) {
 	bt := NewBudgetTracker(decimal.Zero, DefaultPricing)
 
-	bt.RecordUsage("claude-opus-4-6", Usage{
+	bt.RecordUsage(anthropic.ModelClaudeOpus4_6, Usage{
 		InputTokens:  1_000_000,
 		OutputTokens: 500_000,
 	})
@@ -149,7 +150,7 @@ func TestBudgetExhaustion(t *testing.T) {
 	assert.False(t, bt.Exhausted(), "should not be exhausted before usage")
 
 	// 1000 input + 500 output on opus → $0.0175 > $0.01
-	bt.RecordUsage("claude-opus-4-6", Usage{
+	bt.RecordUsage(anthropic.ModelClaudeOpus4_6, Usage{
 		InputTokens:  1000,
 		OutputTokens: 500,
 	})
@@ -161,7 +162,7 @@ func TestRemaining(t *testing.T) {
 	bt := NewBudgetTracker(decimal.NewFromFloat(1.0), DefaultPricing)
 
 	// 1000 input on opus → $0.005
-	bt.RecordUsage("claude-opus-4-6", Usage{InputTokens: 1000})
+	bt.RecordUsage(anthropic.ModelClaudeOpus4_6, Usage{InputTokens: 1000})
 
 	expected := decimal.NewFromFloat(0.995)
 	remaining := bt.Remaining()
@@ -182,7 +183,7 @@ func TestRecordIterations(t *testing.T) {
 		},
 	}
 
-	bt.RecordIterations("claude-opus-4-6", iterations)
+	bt.RecordIterations(anthropic.ModelClaudeOpus4_6, iterations)
 
 	usage := bt.TotalUsage()
 	assert.Equal(t, 102_000, usage.InputTokens)
@@ -220,7 +221,7 @@ func TestConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			bt.RecordUsage("claude-opus-4-6", Usage{
+			bt.RecordUsage(anthropic.ModelClaudeOpus4_6, Usage{
 				InputTokens:  1000,
 				OutputTokens: 500,
 			})
@@ -241,9 +242,9 @@ func TestConcurrentAccess(t *testing.T) {
 func TestMultipleRecordUsageCumulative(t *testing.T) {
 	bt := NewBudgetTracker(decimal.NewFromFloat(10.0), DefaultPricing)
 
-	bt.RecordUsage("claude-opus-4-6", Usage{InputTokens: 1000})
-	bt.RecordUsage("claude-sonnet-4-5", Usage{OutputTokens: 2000})
-	bt.RecordUsage("claude-haiku-4-5", Usage{InputTokens: 500, OutputTokens: 500})
+	bt.RecordUsage(anthropic.ModelClaudeOpus4_6, Usage{InputTokens: 1000})
+	bt.RecordUsage(anthropic.ModelClaudeSonnet4_5, Usage{OutputTokens: 2000})
+	bt.RecordUsage(anthropic.ModelClaudeHaiku4_5, Usage{InputTokens: 500, OutputTokens: 500})
 
 	usage := bt.TotalUsage()
 	assert.Equal(t, 1500, usage.InputTokens)
@@ -265,7 +266,7 @@ func TestExhaustedExact(t *testing.T) {
 	// Budget exactly equals cost
 	// 1000 input on opus = $0.005
 	bt := NewBudgetTracker(decimal.NewFromFloat(0.005), DefaultPricing)
-	bt.RecordUsage("claude-opus-4-6", Usage{InputTokens: 1000})
+	bt.RecordUsage(anthropic.ModelClaudeOpus4_6, Usage{InputTokens: 1000})
 
 	assert.True(t, bt.Exhausted(), "should be exhausted when cost equals budget exactly")
 	assert.True(t, decimal.Zero.Equal(bt.Remaining()), "remaining should be zero")
@@ -275,7 +276,7 @@ func TestLongContextWithCache(t *testing.T) {
 	bt := NewBudgetTracker(decimal.Zero, DefaultPricing)
 
 	// Total input = 150000 + 60000 + 10000 = 220000 > 200K → long context
-	bt.RecordUsage("claude-sonnet-4-5", Usage{
+	bt.RecordUsage(anthropic.ModelClaudeSonnet4_5, Usage{
 		InputTokens:              150_000,
 		OutputTokens:             5000,
 		CacheReadInputTokens:     60_000,

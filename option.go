@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/shopspring/decimal"
 )
 
@@ -31,7 +32,7 @@ type CompactConfig struct {
 
 // agentOptions holds all configurable fields set via AgentOption functions.
 type agentOptions struct {
-	model           string
+	model           anthropic.Model
 	contextWindow   int
 	maxOutputTokens int
 	maxTurns        int
@@ -79,7 +80,8 @@ func resolveOptions(opts []AgentOption) agentOptions {
 // --- Model & Context ---
 
 // WithModel sets the Claude model to use.
-func WithModel(model string) AgentOption {
+// Use constants from anthropic-sdk-go, e.g. anthropic.ModelClaudeSonnet4_5.
+func WithModel(model anthropic.Model) AgentOption {
 	return func(o *agentOptions) { o.model = model }
 }
 

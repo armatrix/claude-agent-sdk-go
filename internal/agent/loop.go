@@ -39,7 +39,7 @@ type ToolExecutor interface {
 // EventSink receives events from the loop. The loop calls these methods instead
 // of importing root package event types, breaking the import cycle.
 type EventSink interface {
-	OnSystem(sessionID, model string)
+	OnSystem(sessionID string, model anthropic.Model)
 	OnStream(delta string)
 	OnAssistant(msg anthropic.Message)
 	OnResult(info ResultInfo)
@@ -69,7 +69,7 @@ type ResultInfo struct {
 type LoopConfig struct {
 	Streamer  MessageStreamer
 	Tools     ToolExecutor
-	Model     string
+	Model     anthropic.Model
 	MaxTokens int
 	MaxTurns  int
 
@@ -108,7 +108,7 @@ func RunLoop(ctx context.Context, cfg LoopConfig) {
 
 		// Build API params
 		params := anthropic.MessageNewParams{
-			Model:     anthropic.Model(cfg.Model),
+			Model:     cfg.Model,
 			MaxTokens: int64(cfg.MaxTokens),
 			Messages:  *cfg.Messages,
 		}

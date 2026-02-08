@@ -85,8 +85,8 @@ func (a *Agent) RunWithSession(ctx context.Context, session *Session, prompt str
 	return stream
 }
 
-// Model returns the configured model name.
-func (a *Agent) Model() string {
+// Model returns the configured model.
+func (a *Agent) Model() anthropic.Model {
 	return a.opts.model
 }
 
@@ -128,7 +128,7 @@ type channelSink struct {
 	ch chan Event
 }
 
-func (s *channelSink) OnSystem(sessionID, model string) {
+func (s *channelSink) OnSystem(sessionID string, model anthropic.Model) {
 	s.ch <- &SystemEvent{SessionID: sessionID, Model: model}
 }
 
