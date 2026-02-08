@@ -1,0 +1,141 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sync"
+
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
+
+	"github.com/armatrix/claude-agent-sdk-go/internal/schema"
+)
+
+// Tool is the generic interface for agent tools. The type parameter T defines
+// the input struct that will be automatically deserialized from JSON.
+type Tool[T any] interface {
+	Name() string
+	Description() string
+	Execute(ctx context.Context, input T) (*ToolResult, error)
+}
+
+// ToolResult is the output of a tool execution.
+type ToolResult struct {
+	Content  []anthropic.ContentBlockParamUnion
+	IsError  bool
+	Metadata map[string]any
+}
+
+// TextResult is a convenience constructor for a text-only tool result.
+func TextResult(text string) *ToolResult {
+	return &ToolResult{
+		Content: []anthropic.ContentBlockParamUnion{
+			anthropic.NewTextBlock(text),
+		},
+	}
+}
+
+// ErrorResult is a convenience constructor for an error tool result.
+func ErrorResult(text string) *ToolResult {
+	return &ToolResult{
+		Content: []anthropic.ContentBlockParamUnion{
+			anthropic.NewTextBlock(text),
+		},
+		IsError: true,
+	}
+}
+
+// toolEntry is the type-erased wrapper stored in the registry.
+type toolEntry struct {
+	name        string
+	description string
+	schema      anthropic.ToolInputSchemaParam
+	execute     func(ctx context.Context, raw json.RawMessage) (*ToolResult, error)
+}
+
+// ToolRegistry manages registered tools. It is concurrent-safe.
+type ToolRegistry struct {
+	mu    sync.RWMutex
+	tools map[string]*toolEntry
+	order []string // preserve registration order
+}
+
+// NewToolRegistry creates a new empty ToolRegistry.
+func NewToolRegistry() *ToolRegistry {
+	return &ToolRegistry{
+		tools: make(map[string]*toolEntry),
+	}
+}
+
+// RegisterTool registers a generic tool into the registry.
+// The input type T is used to auto-generate a JSON Schema.
+func RegisterTool[T any](r *ToolRegistry, tool Tool[T]) {
+	s := schema.Generate[T]()
+	entry := &toolEntry{
+		name:        tool.Name(),
+		description: tool.Description(),
+		schema:      s,
+		execute: func(ctx context.Context, raw json.RawMessage) (*ToolResult, error) {
+			var input T
+			if err := json.Unmarshal(raw, &input); err != nil {
+				return ErrorResult(fmt.Sprintf("invalid input: %s", err.Error())), nil
+			}
+			return tool.Execute(ctx, input)
+		},
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.tools[entry.name]; !exists {
+		r.order = append(r.order, entry.name)
+	}
+	r.tools[entry.name] = entry
+}
+
+// Execute runs a tool by name with the given raw JSON input.
+func (r *ToolRegistry) Execute(ctx context.Context, name string, input json.RawMessage) (*ToolResult, error) {
+	r.mu.RLock()
+	entry, ok := r.tools[name]
+	r.mu.RUnlock()
+
+	if !ok {
+		return nil, fmt.Errorf("tool not found: %s", name)
+	}
+	return entry.execute(ctx, input)
+}
+
+// ListForAPI returns the registered tools in the format expected by the Anthropic API.
+func (r *ToolRegistry) ListForAPI() []anthropic.ToolUnionParam {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	result := make([]anthropic.ToolUnionParam, 0, len(r.tools))
+	for _, name := range r.order {
+		entry := r.tools[name]
+		result = append(result, anthropic.ToolUnionParam{
+			OfTool: &anthropic.ToolParam{
+				Name:        entry.name,
+				Description: param.NewOpt(entry.description),
+				InputSchema: entry.schema,
+			},
+		})
+	}
+	return result
+}
+
+// Get returns a tool entry by name, or nil if not found.
+func (r *ToolRegistry) Get(name string) *toolEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.tools[name]
+}
+
+// Names returns the names of all registered tools in registration order.
+func (r *ToolRegistry) Names() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make([]string, len(r.order))
+	copy(names, r.order)
+	return names
+}
