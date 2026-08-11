@@ -1,3 +1,5 @@
+
+
 # Claude Agent SDK for Go
 
 **Pure Go Agent SDK with pluggable team topologies** — no subprocess, no runtime dependency.
@@ -38,7 +40,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	agent "github.com/armatrix/claude-agent-sdk-go"
-	"github.com/armatrix/claude-agent-sdk-go/internal/builtin"
+	"github.com/armatrix/claude-agent-sdk-go/tools"
 )
 
 func main() {
@@ -48,7 +50,7 @@ func main() {
 	)
 
 	// Register built-in tools (Read, Write, Edit, Bash, Glob, Grep)
-	builtin.RegisterAll(a.Tools())
+	tools.RegisterAll(a.Tools())
 
 	stream := a.Run(context.Background(), "Read go.mod and tell me the module name.")
 
@@ -206,7 +208,7 @@ for stream.Next() {
 
 ## Built-in Tools
 
-Register with `builtin.RegisterAll(a.Tools())`:
+Register with `tools.RegisterAll(a.Tools())`:
 
 | Tool | Description |
 |------|-------------|
